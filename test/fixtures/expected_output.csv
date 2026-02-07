@@ -1,0 +1,4 @@
+email,linkedin_url,company,title,description,confidence,status,error
+alice@example.com,,example.com,,,stub,ok,
+bob@corp.test,,corp.test,,,stub,ok,
+

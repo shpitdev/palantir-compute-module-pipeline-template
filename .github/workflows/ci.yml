@@ -43,6 +43,33 @@ jobs:
           name: enricher_linux_amd64
           path: out/enricher_linux_amd64
 
+  e2e:
+    runs-on: ubuntu-latest
+    needs: verify
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download Venom
+        run: |
+          set -euo pipefail
+          VENOM_VERSION="v1.3.0"
+          VENOM_SHA256="89832ec25e820c605cf0d3c09122e60bad43d13c1724aa6d375ef7109fbfe201"
+          curl -fsSL -o venom "https://github.com/ovh/venom/releases/download/${VENOM_VERSION}/venom.linux-amd64"
+          echo "${VENOM_SHA256}  venom" | sha256sum -c -
+          chmod +x venom
+
+      - name: E2E (docker compose via venom)
+        run: |
+          mkdir -p out/venom
+          ./venom run test/venom/enricher_e2e.yml --format=xml --output-dir=out/venom --html-report
+
+      - name: Upload venom report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: venom-report
+          path: out/venom
+
   docker:
     runs-on: ubuntu-latest
     needs: verify
@@ -78,4 +105,3 @@ jobs:
           push: ${{ github.event_name == 'push' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-

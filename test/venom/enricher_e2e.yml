@@ -1,0 +1,10 @@
+name: enricher e2e (docker compose)
+
+testcases:
+  - name: docker compose smoke
+    steps:
+      - type: exec
+        script: bash test/scripts/e2e_docker_compose.sh
+        assertions:
+          - result.code ShouldEqual 0
+

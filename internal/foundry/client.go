@@ -78,7 +78,7 @@ func (c *Client) ReadTableCSV(ctx context.Context, datasetRID, branch string) ([
 }
 
 type createTxnRequest struct {
-	Branch string `json:"branch"`
+	Branch string `json:"branch,omitempty"`
 }
 
 type createTxnResponse struct {

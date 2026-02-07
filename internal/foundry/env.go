@@ -85,7 +85,7 @@ func readAliasMapEnv(varName string) (map[string]DatasetRef, error) {
 		if strings.TrimSpace(v.RID) == "" {
 			return nil, fmt.Errorf("alias %q: rid is required", k)
 		}
-		branch := "master"
+		branch := ""
 		if v.Branch != nil && strings.TrimSpace(*v.Branch) != "" {
 			branch = strings.TrimSpace(*v.Branch)
 		}
