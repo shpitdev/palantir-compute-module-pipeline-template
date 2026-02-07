@@ -2,6 +2,11 @@
   "lsp": {
     "gopls": {
       "settings": {
+        "gopls": {
+          "buildFlags": ["-tags=gemini_e2e"]
+        }
+      },
+      "initialization_options": {
         "buildFlags": ["-tags=gemini_e2e"]
       }
     }
