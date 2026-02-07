@@ -47,7 +47,7 @@ func TestRunFoundry_EndToEndAgainstMock(t *testing.T) {
 		},
 	}
 
-	if err := app.RunFoundry(context.Background(), env, "input", "output", "enriched.csv", enrich.Stub{}); err != nil {
+	if err := app.RunFoundry(context.Background(), env, "input", "output", "enriched.csv", pipeline.Options{}, enrich.Stub{}); err != nil {
 		t.Fatalf("RunFoundry failed: %v", err)
 	}
 

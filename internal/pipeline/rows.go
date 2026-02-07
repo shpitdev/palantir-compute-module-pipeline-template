@@ -3,8 +3,10 @@ package pipeline
 import (
 	"context"
 	"strings"
+	"time"
 
 	"github.com/palantir/palantir-compute-module-pipeline-search/internal/enrich"
+	"github.com/palantir/palantir-compute-module-pipeline-search/internal/enrich/worker"
 )
 
 // Row is the stable output schema contract for the MVP.
@@ -17,6 +19,14 @@ type Row struct {
 	Confidence  string
 	Status      string
 	Error       string
+}
+
+type Options struct {
+	Workers        int
+	MaxRetries     int
+	RequestTimeout time.Duration
+	RateLimitRPS   float64
+	FailFast       bool
 }
 
 // Header returns the stable CSV header for Row.
@@ -36,40 +46,44 @@ func Header() []string {
 // EnrichEmails runs the enricher over all emails and returns stable output rows.
 //
 // Errors from enrichment are recorded per-row and do not fail the full run.
-func EnrichEmails(ctx context.Context, emails []string, enricher enrich.Enricher) ([]Row, error) {
-	rows := make([]Row, 0, len(emails))
-	for _, raw := range emails {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
+func EnrichEmails(ctx context.Context, emails []string, enricher enrich.Enricher, opts Options) ([]Row, error) {
+	policy := worker.FailurePolicyPartialOutput
+	if opts.FailFast {
+		policy = worker.FailurePolicyFailFast
+	}
 
-		email := strings.TrimSpace(raw)
-		if email == "" {
-			rows = append(rows, Row{
-				Email:  "",
-				Status: "error",
-				Error:  "empty email",
-			})
-			continue
-		}
+	out, err := worker.EnrichAll(ctx, emails, enricher, worker.Options{
+		Workers:           opts.Workers,
+		MaxRetries:        opts.MaxRetries,
+		RequestTimeout:    opts.RequestTimeout,
+		RateLimitRPS:      opts.RateLimitRPS,
+		FailurePolicy:     policy,
+		BackoffInitial:    200 * time.Millisecond,
+		BackoffMax:        2 * time.Second,
+		BackoffJitterFrac: 0.2,
+	})
+	if err != nil {
+		return nil, err
+	}
 
-		res, err := enricher.Enrich(ctx, email)
-		if err != nil {
+	rows := make([]Row, 0, len(out))
+	for _, item := range out {
+		if item.Err != nil {
 			rows = append(rows, Row{
-				Email:  email,
+				Email:  strings.TrimSpace(item.Email),
 				Status: "error",
-				Error:  err.Error(),
+				Error:  item.Err.Error(),
 			})
 			continue
 		}
 
 		rows = append(rows, Row{
-			Email:       email,
-			LinkedInURL: res.LinkedInURL,
-			Company:     res.Company,
-			Title:       res.Title,
-			Description: res.Description,
-			Confidence:  res.Confidence,
+			Email:       item.Email,
+			LinkedInURL: item.Result.LinkedInURL,
+			Company:     item.Result.Company,
+			Title:       item.Result.Title,
+			Description: item.Result.Description,
+			Confidence:  item.Result.Confidence,
 			Status:      "ok",
 			Error:       "",
 		})

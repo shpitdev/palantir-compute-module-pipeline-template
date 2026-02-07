@@ -11,7 +11,7 @@ import (
 )
 
 func TestEnrichEmails(t *testing.T) {
-	rows, err := pipeline.EnrichEmails(context.Background(), []string{" alice@example.com ", "bob@error.test", ""}, enrich.Stub{})
+	rows, err := pipeline.EnrichEmails(context.Background(), []string{" alice@example.com ", "bob@error.test", ""}, enrich.Stub{}, pipeline.Options{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

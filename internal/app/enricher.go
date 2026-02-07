@@ -17,7 +17,7 @@ import (
 )
 
 // RunLocal reads a local input CSV of emails and writes a local output CSV of enriched rows.
-func RunLocal(ctx context.Context, inputPath, outputPath string, enricher enrich.Enricher) error {
+func RunLocal(ctx context.Context, inputPath, outputPath string, opts pipeline.Options, enricher enrich.Enricher) error {
 	inF, err := os.Open(inputPath)
 	if err != nil {
 		return err
@@ -31,7 +31,7 @@ func RunLocal(ctx context.Context, inputPath, outputPath string, enricher enrich
 		return err
 	}
 
-	rows, err := pipeline.EnrichEmails(ctx, emails, enricher)
+	rows, err := pipeline.EnrichEmails(ctx, emails, enricher, opts)
 	if err != nil {
 		return err
 	}
@@ -57,6 +57,7 @@ func RunFoundry(
 	inputAlias string,
 	outputAlias string,
 	outputFilename string,
+	opts pipeline.Options,
 	enricher enrich.Enricher,
 ) error {
 	inputRef, ok := env.Aliases[inputAlias]
@@ -90,7 +91,7 @@ func RunFoundry(
 		return err
 	}
 
-	rows, err := pipeline.EnrichEmails(ctx, emails, enricher)
+	rows, err := pipeline.EnrichEmails(ctx, emails, enricher, opts)
 	if err != nil {
 		return err
 	}

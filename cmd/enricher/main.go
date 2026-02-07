@@ -9,6 +9,7 @@ import (
 	"github.com/palantir/palantir-compute-module-pipeline-search/internal/app"
 	"github.com/palantir/palantir-compute-module-pipeline-search/internal/enrich"
 	"github.com/palantir/palantir-compute-module-pipeline-search/internal/foundry"
+	"github.com/palantir/palantir-compute-module-pipeline-search/internal/pipeline"
 )
 
 func main() {
@@ -50,7 +51,7 @@ func runLocal(ctx context.Context, args []string) int {
 	}
 
 	// MVP: always use the stub enricher to stay hermetic (Gemini implementation comes later).
-	if err := app.RunLocal(ctx, inputPath, outputPath, enrich.Stub{}); err != nil {
+	if err := app.RunLocal(ctx, inputPath, outputPath, pipeline.Options{}, enrich.Stub{}); err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "local run failed: %v\n", err)
 		return 1
 	}
@@ -74,7 +75,7 @@ func runFoundry(ctx context.Context, args []string) int {
 	}
 
 	// MVP: always use the stub enricher to keep default runs hermetic.
-	if err := app.RunFoundry(ctx, env, *inputAlias, *outputAlias, *outputFilename, enrich.Stub{}); err != nil {
+	if err := app.RunFoundry(ctx, env, *inputAlias, *outputAlias, *outputFilename, pipeline.Options{}, enrich.Stub{}); err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "foundry run failed: %v\n", err)
 		return 1
 	}
