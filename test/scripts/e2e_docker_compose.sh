@@ -34,8 +34,10 @@ trap cleanup EXIT
 UPLOADS_DIR="${ROOT_DIR}/test/artifacts/mock-foundry/uploads"
 mkdir -p "${UPLOADS_DIR}"
 
-# Clean using a container to avoid host permission issues when a previous run wrote artifacts as root.
-docker run --rm --network=none -v "${UPLOADS_DIR}:/uploads" alpine:3.20 sh -c 'rm -rf /uploads/*'
+# Best-effort cleanup. If a prior run wrote files as root, host cleanup can fail; fall back to a container.
+if ! rm -rf "${UPLOADS_DIR:?}/"* 2>/dev/null; then
+  docker run --rm --network=none -v "${UPLOADS_DIR}:/uploads" alpine:3.20 sh -c 'rm -rf /uploads/*'
+fi
 
 set +e
 compose up --build --abort-on-container-exit --exit-code-from enricher
