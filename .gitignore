@@ -42,6 +42,10 @@ TODO.md
 .opencode/
 opencode.jsonc
 
+# Backup files
+*.bak
+*.bak.*
+
 # Local build and test artifacts
 out/
 bin/
