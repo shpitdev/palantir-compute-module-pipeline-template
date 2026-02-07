@@ -119,4 +119,26 @@ func TestRunFoundry_EndToEndAgainstMock(t *testing.T) {
 	if records[2][0] != "bob@corp.test" || records[2][2] != "corp.test" || records[2][5] != "test" || records[2][6] != "ok" || records[2][8] != "test-model" {
 		t.Fatalf("unexpected row[2]: %#v", records[2])
 	}
+
+	// The committed dataset can be retrieved via readTable (read-after-write semantics).
+	client, err := foundry.NewClient(ts.URL, env.Token)
+	if err != nil {
+		t.Fatalf("new foundry client: %v", err)
+	}
+	got, err := client.ReadTableCSV(context.Background(), outputRID, "master")
+	if err != nil {
+		t.Fatalf("read committed output via readTable: %v", err)
+	}
+	if !bytes.Equal(got, uploads[0].Bytes) {
+		t.Fatalf("readTable output mismatch:\n--- got ---\n%s\n--- want ---\n%s\n", string(got), string(uploads[0].Bytes))
+	}
+
+	// Verify the extra readTable call was recorded.
+	calls = mock.Calls()
+	if len(calls) != 5 {
+		t.Fatalf("expected 5 calls after readTable, got %d: %#v", len(calls), calls)
+	}
+	if calls[4].Path != "/api/v1/datasets/"+outputRID+"/readTable" {
+		t.Fatalf("call[4] path: want %q, got %q (all calls=%#v)", "/api/v1/datasets/"+outputRID+"/readTable", calls[4].Path, calls)
+	}
 }
