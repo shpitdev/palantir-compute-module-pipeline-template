@@ -194,28 +194,33 @@ Layer 4: Gemini integration tests (opt-in)
 - Prefer early, realistic end-to-end runs against the real Gemini API using a tiny fixture
 - Keep opt-in behind a build tag and a required env var so CI stays hermetic
 
-## Repo Layout (Planned)
+## Repo Layout
 
 ```
 cmd/enricher/main.go
+cmd/mock-foundry/main.go
 internal/
-  foundry/
-    env.go
-    aliases.go
-    datasets.go
+  app/
+    enricher.go
   enrich/
-    gemini.go
-    worker.go
+    stub.go
     types.go
-    pipeline.go
+  foundry/
+    client.go
+    env.go
+  mockfoundry/
+    server.go
+  pipeline/
+    csv.go
+    rows.go
   util/
-    backoff.go
-    csvio.go
+    csv.go
 test/
   fixtures/
-  mock-foundry/
 docker-compose.test.yml
+docker-compose.local.yml
 Dockerfile
+Dockerfile.mock-foundry
 ```
 
 ## Container Image
