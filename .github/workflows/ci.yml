@@ -69,6 +69,7 @@ jobs:
         with:
           name: venom-report
           path: out/venom/*.xml
+          if-no-files-found: warn
 
   docker:
     runs-on: ubuntu-latest
