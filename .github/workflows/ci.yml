@@ -99,8 +99,10 @@ jobs:
         run: |
           set -euo pipefail
           VENOM_VERSION="v1.3.0"
-          curl -fsSL -o /usr/local/bin/venom "https://github.com/ovh/venom/releases/download/${VENOM_VERSION}/venom.linux-amd64"
-          chmod +x /usr/local/bin/venom
+          VENOM_SHA256="89832ec25e820c605cf0d3c09122e60bad43d13c1724aa6d375ef7109fbfe201"
+          curl -fsSL -o /tmp/venom "https://github.com/ovh/venom/releases/download/${VENOM_VERSION}/venom.linux-amd64"
+          echo "${VENOM_SHA256}  /tmp/venom" | sha256sum -c -
+          install -m 0755 /tmp/venom /usr/local/bin/venom
           venom version
 
       - name: Require Gemini secrets

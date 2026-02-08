@@ -71,7 +71,9 @@ func newHTTPError(op string, resp *http.Response, body []byte) error {
 		h.ErrorName = strings.TrimSpace(env.ErrorName)
 		h.ErrorCode = strings.TrimSpace(env.ErrorCode)
 		h.ErrorInstanceID = strings.TrimSpace(env.ErrorInstanceID)
-		return h
+		if h.ErrorName != "" || h.ErrorCode != "" || h.ErrorInstanceID != "" {
+			return h
+		}
 	}
 
 	// Fallback: include a small, redacted hint only.
