@@ -2,6 +2,8 @@ package mockfoundry
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -86,9 +88,49 @@ func (s *Server) RequireBearerToken(token string) {
 // Handler returns an http.Handler that serves the mock API.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("/__debug/health", s.handleDebugHealth)
+	mux.HandleFunc("/__debug/calls", s.handleDebugCalls)
+	mux.HandleFunc("/__debug/uploads", s.handleDebugUploads)
 	mux.HandleFunc("/api/v1/datasets/", s.handleV1Datasets)
 	mux.HandleFunc("/api/v2/datasets/", s.handleV2Datasets)
 	return mux
+}
+
+func (s *Server) handleDebugHealth(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "text/plain")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte("ok\n"))
+}
+
+func (s *Server) handleDebugCalls(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(s.Calls())
+}
+
+type debugUpload struct {
+	DatasetRID string `json:"datasetRid"`
+	TxnID      string `json:"txnId"`
+	FilePath   string `json:"filePath"`
+	SizeBytes  int    `json:"sizeBytes"`
+	SHA256Hex  string `json:"sha256Hex"`
+}
+
+func (s *Server) handleDebugUploads(w http.ResponseWriter, _ *http.Request) {
+	raw := s.Uploads()
+	out := make([]debugUpload, 0, len(raw))
+	for _, u := range raw {
+		sum := sha256.Sum256(u.Bytes)
+		out = append(out, debugUpload{
+			DatasetRID: u.DatasetRID,
+			TxnID:      u.TxnID,
+			FilePath:   u.FilePath,
+			SizeBytes:  len(u.Bytes),
+			SHA256Hex:  hex.EncodeToString(sum[:]),
+		})
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(out)
 }
 
 // Calls returns a snapshot of calls made to the server.

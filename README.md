@@ -34,6 +34,14 @@ docker compose -f docker-compose.local.yml up --abort-on-container-exit --build
 
 See `docker-compose.local.yml` for how to provide the input CSV and where outputs are written.
 
+Run the CI-style docker-compose E2E (fixed fixtures + output validation):
+
+```bash
+export GEMINI_API_KEY=...
+export GEMINI_MODEL=gemini-2.5-flash
+./test/scripts/venom.sh run test/venom/enricher_e2e.yml -v
+```
+
 ## Docs
 
 - `docs/DESIGN.md`: architecture, interfaces, local testing approach

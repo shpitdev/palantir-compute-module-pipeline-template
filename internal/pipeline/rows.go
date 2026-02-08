@@ -8,6 +8,7 @@ import (
 
 	"github.com/palantir/palantir-compute-module-pipeline-search/internal/enrich"
 	"github.com/palantir/palantir-compute-module-pipeline-search/internal/enrich/worker"
+	"github.com/palantir/palantir-compute-module-pipeline-search/internal/util"
 )
 
 // Row is the stable output schema contract for the MVP.
@@ -83,7 +84,7 @@ func EnrichEmails(ctx context.Context, emails []string, enricher enrich.Enricher
 			rows = append(rows, Row{
 				Email:            strings.TrimSpace(item.Email),
 				Status:           "error",
-				Error:            item.Err.Error(),
+				Error:            util.RedactSecrets(item.Err.Error()),
 				Model:            item.Result.Model,
 				Sources:          sources,
 				WebSearchQueries: queries,

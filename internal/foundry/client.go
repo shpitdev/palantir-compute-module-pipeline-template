@@ -73,7 +73,7 @@ func (c *Client) ReadTableCSV(ctx context.Context, datasetRID, branch string) ([
 		return nil, err
 	}
 	if resp.StatusCode/100 != 2 {
-		return nil, fmt.Errorf("readTable failed: status=%s body=%s", resp.Status, truncateForError(b))
+		return nil, newHTTPError("readTable", resp, b)
 	}
 	return b, nil
 }
@@ -125,7 +125,7 @@ func (c *Client) CreateTransaction(ctx context.Context, datasetRID, branch strin
 		return "", err
 	}
 	if resp.StatusCode/100 != 2 {
-		return "", fmt.Errorf("create transaction failed: status=%s body=%s", resp.Status, truncateForError(rb))
+		return "", newHTTPError("createTransaction", resp, rb)
 	}
 
 	var out createTxnResponse
@@ -174,7 +174,7 @@ func (c *Client) UploadFile(ctx context.Context, datasetRID, txnID, filePath str
 		return err
 	}
 	if resp.StatusCode/100 != 2 {
-		return fmt.Errorf("upload file failed: status=%s body=%s", resp.Status, truncateForError(rb))
+		return newHTTPError("uploadFile", resp, rb)
 	}
 	return nil
 }
@@ -206,7 +206,7 @@ func (c *Client) CommitTransaction(ctx context.Context, datasetRID, txnID string
 		return err
 	}
 	if resp.StatusCode/100 != 2 {
-		return fmt.Errorf("commit transaction failed: status=%s body=%s", resp.Status, truncateForError(rb))
+		return newHTTPError("commitTransaction", resp, rb)
 	}
 	return nil
 }
@@ -229,12 +229,4 @@ func escapeURLPath(p string) string {
 		parts[i] = url.PathEscape(part)
 	}
 	return strings.Join(parts, "/")
-}
-
-func truncateForError(b []byte) string {
-	const max = 1024
-	if len(b) <= max {
-		return string(bytes.TrimSpace(b))
-	}
-	return string(bytes.TrimSpace(b[:max])) + "..."
 }

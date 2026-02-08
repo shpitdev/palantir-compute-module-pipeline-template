@@ -169,15 +169,16 @@ func enrichOne(ctx context.Context, raw string, enricher enrich.Enricher, limite
 
 func enrichWithRetry(ctx context.Context, enricher enrich.Enricher, email string, limiter *rate.Limiter, opts Options) (enrich.Result, error) {
 	var lastErr error
+	var lastRes enrich.Result
 	attempts := 1 + opts.MaxRetries
 	for attempt := 0; attempt < attempts; attempt++ {
 		if err := ctx.Err(); err != nil {
-			return enrich.Result{}, err
+			return lastRes, err
 		}
 
 		if limiter != nil {
 			if err := limiter.Wait(ctx); err != nil {
-				return enrich.Result{}, err
+				return lastRes, err
 			}
 		}
 
@@ -187,6 +188,7 @@ func enrichWithRetry(ctx context.Context, enricher enrich.Enricher, email string
 			reqCtx, cancel = context.WithTimeout(ctx, opts.RequestTimeout)
 		}
 		res, err := enricher.Enrich(reqCtx, email)
+		lastRes = res
 		if cancel != nil {
 			cancel()
 		}
@@ -194,11 +196,11 @@ func enrichWithRetry(ctx context.Context, enricher enrich.Enricher, email string
 			return res, nil
 		}
 		if errors.Is(err, context.Canceled) && ctx.Err() != nil {
-			return enrich.Result{}, ctx.Err()
+			return lastRes, ctx.Err()
 		}
 		lastErr = err
 		if !isTransient(err) || attempt == attempts-1 {
-			return enrich.Result{}, err
+			return lastRes, err
 		}
 
 		sleep := backoffSleep(opts.BackoffInitial, opts.BackoffMax, opts.BackoffJitterFrac, attempt)
@@ -207,10 +209,10 @@ func enrichWithRetry(ctx context.Context, enricher enrich.Enricher, email string
 		case <-t.C:
 		case <-ctx.Done():
 			t.Stop()
-			return enrich.Result{}, ctx.Err()
+			return lastRes, ctx.Err()
 		}
 	}
-	return enrich.Result{}, lastErr
+	return lastRes, lastErr
 }
 
 func isTransient(err error) bool {

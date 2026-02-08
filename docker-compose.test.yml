@@ -1,0 +1,45 @@
+# CI/local E2E: mock Foundry dataset APIs + real container + real Gemini.
+#
+# Requires:
+#   GEMINI_API_KEY
+#   GEMINI_MODEL
+#
+# Outputs:
+#   test/artifacts/mock-foundry/uploads/<OUTPUT_RID>/_committed/readTable.csv
+services:
+  mock-foundry:
+    image: palantir-compute-module-pipeline-search/mock-foundry:e2e
+    user: "${VENOM_UID:-0}:${VENOM_GID:-0}"
+    network_mode: host
+    environment:
+      MOCK_FOUNDRY_ADDR: "127.0.0.1:18080"
+      MOCK_FOUNDRY_INPUT_DIR: "/data/inputs"
+      MOCK_FOUNDRY_UPLOAD_DIR: "/data/uploads"
+    volumes:
+      - ./test/fixtures/mock-foundry/inputs:/data/inputs:ro
+      - ./test/artifacts/mock-foundry/uploads:/data/uploads
+
+  enricher:
+    image: palantir-compute-module-pipeline-search/enricher:e2e
+    network_mode: host
+    environment:
+      FOUNDRY_URL: "http://127.0.0.1:18080"
+      BUILD2_TOKEN: "/fixtures/token.txt"
+      RESOURCE_ALIAS_MAP: "/fixtures/alias-map.json"
+
+      GEMINI_API_KEY: "${GEMINI_API_KEY}"
+      GEMINI_MODEL: "${GEMINI_MODEL}"
+      GEMINI_BASE_URL: "${GEMINI_BASE_URL:-}"
+      GEMINI_CAPTURE_AUDIT: "${GEMINI_CAPTURE_AUDIT:-true}"
+
+      # E2E should fail loudly if Gemini or the pipeline fails.
+      FAIL_FAST: "true"
+
+      # Keep runs stable and quota-friendly by default.
+      WORKERS: "${WORKERS:-1}"
+      MAX_RETRIES: "${MAX_RETRIES:-2}"
+      REQUEST_TIMEOUT: "${REQUEST_TIMEOUT:-45s}"
+      RATE_LIMIT_RPS: "${RATE_LIMIT_RPS:-1}"
+    volumes:
+      - ./test/fixtures:/fixtures:ro
+    command: ["foundry"]

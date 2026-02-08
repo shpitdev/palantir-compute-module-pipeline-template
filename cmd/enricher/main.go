@@ -13,6 +13,7 @@ import (
 	"github.com/palantir/palantir-compute-module-pipeline-search/internal/enrich/gemini"
 	"github.com/palantir/palantir-compute-module-pipeline-search/internal/foundry"
 	"github.com/palantir/palantir-compute-module-pipeline-search/internal/pipeline"
+	"github.com/palantir/palantir-compute-module-pipeline-search/internal/util"
 )
 
 func main() {
@@ -41,12 +42,12 @@ func main() {
 func runLocal(ctx context.Context, args []string) int {
 	pipeEnv, err := loadPipelineOptionsFromEnv()
 	if err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "config error: %v\n", err)
+		_, _ = fmt.Fprintf(os.Stderr, "config error: %s\n", util.RedactSecrets(err.Error()))
 		return 2
 	}
 	gemEnv, err := loadGeminiConfigFromEnv()
 	if err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "config error: %v\n", err)
+		_, _ = fmt.Fprintf(os.Stderr, "config error: %s\n", util.RedactSecrets(err.Error()))
 		return 2
 	}
 
@@ -88,7 +89,7 @@ func runLocal(ctx context.Context, args []string) int {
 		CaptureAudit: captureAudit,
 	})
 	if err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "gemini config error: %v\n", err)
+		_, _ = fmt.Fprintf(os.Stderr, "gemini config error: %s\n", util.RedactSecrets(err.Error()))
 		return 2
 	}
 
@@ -99,7 +100,7 @@ func runLocal(ctx context.Context, args []string) int {
 		RateLimitRPS:   rateLimitRPS,
 		FailFast:       failFast,
 	}, enricher); err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "local run failed: %v\n", err)
+		_, _ = fmt.Fprintf(os.Stderr, "local run failed: %s\n", util.RedactSecrets(err.Error()))
 		return 1
 	}
 	return 0
@@ -108,12 +109,12 @@ func runLocal(ctx context.Context, args []string) int {
 func runFoundry(ctx context.Context, args []string) int {
 	pipeEnv, err := loadPipelineOptionsFromEnv()
 	if err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "config error: %v\n", err)
+		_, _ = fmt.Fprintf(os.Stderr, "config error: %s\n", util.RedactSecrets(err.Error()))
 		return 2
 	}
 	gemEnv, err := loadGeminiConfigFromEnv()
 	if err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "config error: %v\n", err)
+		_, _ = fmt.Fprintf(os.Stderr, "config error: %s\n", util.RedactSecrets(err.Error()))
 		return 2
 	}
 
@@ -136,7 +137,7 @@ func runFoundry(ctx context.Context, args []string) int {
 
 	env, err := foundry.LoadEnv()
 	if err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "foundry env error: %v\n", err)
+		_, _ = fmt.Fprintf(os.Stderr, "foundry env error: %s\n", util.RedactSecrets(err.Error()))
 		return 2
 	}
 
@@ -147,7 +148,7 @@ func runFoundry(ctx context.Context, args []string) int {
 		CaptureAudit: *captureAudit,
 	})
 	if err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "gemini config error: %v\n", err)
+		_, _ = fmt.Fprintf(os.Stderr, "gemini config error: %s\n", util.RedactSecrets(err.Error()))
 		return 2
 	}
 
@@ -158,7 +159,7 @@ func runFoundry(ctx context.Context, args []string) int {
 		RateLimitRPS:   *rateLimitRPS,
 		FailFast:       *failFast,
 	}, enricher); err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "foundry run failed: %v\n", err)
+		_, _ = fmt.Fprintf(os.Stderr, "foundry run failed: %s\n", util.RedactSecrets(err.Error()))
 		return 1
 	}
 	return 0
