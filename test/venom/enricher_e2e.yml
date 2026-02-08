@@ -12,19 +12,19 @@ testcases:
   steps:
   - type: exec
     script: |
-      set -euo pipefail
+      set -eu
       cd "$(git rev-parse --show-toplevel)"
       mkdir -p test/artifacts/mock-foundry/uploads
       docker compose -f docker-compose.test.yml down -v --remove-orphans || true
       # Ensure clean uploads dir even if previous runs left root-owned files.
-      docker run --rm --network=host -v "$PWD/test/artifacts/mock-foundry/uploads:/uploads" alpine:3.20 sh -lc 'rm -rf /uploads/*'
+      docker run --rm --network=host -v "$PWD/test/artifacts/mock-foundry/uploads:/uploads" alpine:3.20 sh -c 'rm -rf /uploads/*'
       docker build --network=host -f Dockerfile.mock-foundry -t palantir-compute-module-pipeline-search/mock-foundry:e2e .
       docker build --network=host -f Dockerfile -t palantir-compute-module-pipeline-search/enricher:e2e .
       VENOM_UID="$(id -u)" VENOM_GID="$(id -g)" docker compose -f docker-compose.test.yml up -d mock-foundry
 
   - type: exec
     script: |
-      set -euo pipefail
+      set -eu
       cd "$(git rev-parse --show-toplevel)"
       # Wait for mock-foundry to accept connections.
       for i in $(seq 1 50); do
@@ -40,7 +40,7 @@ testcases:
 
   - type: exec
     script: |
-      set -euo pipefail
+      set -eu
       cd "$(git rev-parse --show-toplevel)"
       VENOM_UID="$(id -u)" VENOM_GID="$(id -g)" docker compose -f docker-compose.test.yml run --rm enricher
     assertions:
@@ -90,7 +90,7 @@ testcases:
 
   - type: exec
     script: |
-      set -euo pipefail
+      set -eu
       cd "$(git rev-parse --show-toplevel)"
       docker compose -f docker-compose.test.yml down -v --remove-orphans
     assertions:
