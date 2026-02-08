@@ -74,7 +74,9 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GEMINI_MODEL: ${{ secrets.GEMINI_MODEL }}
           GEMINI_CAPTURE_AUDIT: "true"
-          GEMINI_E2E_ARTIFACT_DIR: "out/gemini-e2e"
+          # go test executes each package with a package-level working dir; use an absolute
+          # path so CSV artifacts land in a stable location for upload.
+          GEMINI_E2E_ARTIFACT_DIR: "${{ github.workspace }}/out/gemini-e2e"
         run: |
           set -euo pipefail
           go test -tags=gemini_e2e ./...
