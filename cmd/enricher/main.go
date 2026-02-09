@@ -122,7 +122,8 @@ func runFoundry(ctx context.Context, args []string) int {
 	fs.SetOutput(os.Stderr)
 	inputAlias := fs.String("input-alias", "input", "Alias name for the input dataset in RESOURCE_ALIAS_MAP")
 	outputAlias := fs.String("output-alias", "output", "Alias name for the output dataset in RESOURCE_ALIAS_MAP")
-	outputFilename := fs.String("output-filename", "enriched.csv", "Filename to upload into the output dataset transaction")
+	outputFilename := fs.String("output-filename", "enriched.csv", "Filename to upload into the output dataset transaction (dataset mode only)")
+	outputWriteMode := fs.String("output-write-mode", "auto", "Output write mode: auto|dataset|stream (auto probes stream-proxy first)")
 	workers := fs.Int("workers", pipeEnv.Workers, "Number of concurrent enrichment workers (env: WORKERS)")
 	maxRetries := fs.Int("max-retries", pipeEnv.MaxRetries, "Max retries per email for transient failures (env: MAX_RETRIES)")
 	requestTimeout := fs.Duration("request-timeout", pipeEnv.RequestTimeout, "Per-email request timeout (env: REQUEST_TIMEOUT)")
@@ -152,7 +153,7 @@ func runFoundry(ctx context.Context, args []string) int {
 		return 2
 	}
 
-	if err := app.RunFoundry(ctx, env, *inputAlias, *outputAlias, *outputFilename, pipeline.Options{
+	if err := app.RunFoundry(ctx, env, *inputAlias, *outputAlias, *outputFilename, *outputWriteMode, pipeline.Options{
 		Workers:        *workers,
 		MaxRetries:     *maxRetries,
 		RequestTimeout: *requestTimeout,
@@ -184,18 +185,23 @@ Environment (foundry):
   RESOURCE_ALIAS_MAP  File path containing alias -> {rid, branch} JSON
 
 Environment (Gemini):
-  GEMINI_API_KEY        Gemini API key (required)
+  GEMINI_API_KEY        Gemini API key (required). Can be the literal key or a file path containing the key.
   GEMINI_MODEL          Gemini model name (required)
   GEMINI_BASE_URL       Optional base URL override (proxies/testing)
   GEMINI_CAPTURE_AUDIT  If set to true/1, include sources/queries in output
+
+Environment (Foundry Sources, optional):
+  SOURCE_CREDENTIALS         File path containing a JSON dictionary of Source credentials (injected by Foundry)
+  GEMINI_SOURCE_API_NAME     Source API name to read GEMINI key from SOURCE_CREDENTIALS
+  GEMINI_SOURCE_SECRET_NAME  Secret name within that Source (if omitted, this binary will try to infer)
 
 `)
 }
 
 func loadGeminiConfigFromEnv() (gemini.Config, error) {
-	apiKey := strings.TrimSpace(os.Getenv("GEMINI_API_KEY"))
-	if apiKey == "" {
-		return gemini.Config{}, fmt.Errorf("GEMINI_API_KEY is required")
+	apiKey, err := loadGeminiAPIKey()
+	if err != nil {
+		return gemini.Config{}, err
 	}
 
 	captureAudit, err := envBool("GEMINI_CAPTURE_AUDIT")
@@ -209,6 +215,147 @@ func loadGeminiConfigFromEnv() (gemini.Config, error) {
 		BaseURL:      strings.TrimSpace(os.Getenv("GEMINI_BASE_URL")),
 		CaptureAudit: captureAudit,
 	}, nil
+}
+
+func loadGeminiAPIKey() (string, error) {
+	// 1) Prefer explicit env var injection.
+	if v := strings.TrimSpace(os.Getenv("GEMINI_API_KEY")); v != "" {
+		key, err := readValueOrFile(v, "GEMINI_API_KEY")
+		if err != nil {
+			return "", err
+		}
+		if strings.TrimSpace(key) == "" {
+			return "", fmt.Errorf("GEMINI_API_KEY is required")
+		}
+		return key, nil
+	}
+
+	// 2) Fall back to Foundry Sources credentials (recommended by Foundry docs).
+	creds, err := foundry.LoadSourceCredentialsFromEnv()
+	if err != nil {
+		return "", fmt.Errorf("GEMINI_API_KEY is required (or configure Sources and provide SOURCE_CREDENTIALS): %w", err)
+	}
+
+	sourceAPIName := strings.TrimSpace(os.Getenv("GEMINI_SOURCE_API_NAME"))
+	secretName := strings.TrimSpace(os.Getenv("GEMINI_SOURCE_SECRET_NAME"))
+
+	if sourceAPIName != "" {
+		// Fully specified: source + optional secret name.
+		key, ok, err := pickSecretFromSource(creds, sourceAPIName, secretName)
+		if err != nil {
+			return "", err
+		}
+		if ok {
+			return key, nil
+		}
+		return "", fmt.Errorf(
+			"could not find Gemini API key in SOURCE_CREDENTIALS for source %q (available secrets: %v); set GEMINI_SOURCE_SECRET_NAME or GEMINI_API_KEY",
+			sourceAPIName,
+			creds.SecretNames(sourceAPIName),
+		)
+	}
+
+	// Not specified: attempt inference.
+	if len(creds) == 1 {
+		var onlySource string
+		for k := range creds {
+			onlySource = k
+		}
+		key, ok, err := pickSecretFromSource(creds, onlySource, secretName)
+		if err != nil {
+			return "", err
+		}
+		if ok {
+			return key, nil
+		}
+		return "", fmt.Errorf(
+			"could not infer Gemini API key from SOURCE_CREDENTIALS (source %q has secrets %v); set GEMINI_SOURCE_SECRET_NAME or GEMINI_API_KEY",
+			onlySource,
+			creds.SecretNames(onlySource),
+		)
+	}
+
+	// Multiple sources: try to find a single unambiguous match.
+	type match struct {
+		source string
+		secret string
+		value  string
+	}
+	var matches []match
+	for _, srcName := range creds.SourceNames() {
+		key, ok, _ := pickSecretFromSource(creds, srcName, secretName)
+		if ok {
+			// pickSecretFromSource uses a deterministic preference order; record which key it picked for debugging.
+			picked := secretName
+			if picked == "" {
+				picked = "<inferred>"
+			}
+			matches = append(matches, match{source: srcName, secret: picked, value: key})
+		}
+	}
+	if len(matches) == 1 {
+		return matches[0].value, nil
+	}
+	if len(matches) > 1 {
+		return "", fmt.Errorf("multiple Sources in SOURCE_CREDENTIALS could provide the Gemini API key; set GEMINI_SOURCE_API_NAME (available sources: %v)", creds.SourceNames())
+	}
+	return "", fmt.Errorf("could not infer Gemini API key from SOURCE_CREDENTIALS; set GEMINI_SOURCE_API_NAME and GEMINI_SOURCE_SECRET_NAME (available sources: %v)", creds.SourceNames())
+}
+
+func pickSecretFromSource(creds foundry.SourceCredentials, sourceAPIName, preferredSecretName string) (string, bool, error) {
+	sourceAPIName = strings.TrimSpace(sourceAPIName)
+	if sourceAPIName == "" {
+		return "", false, fmt.Errorf("GEMINI_SOURCE_API_NAME is empty")
+	}
+	if _, ok := creds[sourceAPIName]; !ok {
+		return "", false, fmt.Errorf("SOURCE_CREDENTIALS missing source %q (available sources: %v)", sourceAPIName, creds.SourceNames())
+	}
+
+	// If the user specifies the secret name, respect it.
+	if strings.TrimSpace(preferredSecretName) != "" {
+		if v, ok := creds.GetSecret(sourceAPIName, preferredSecretName); ok {
+			return v, true, nil
+		}
+		return "", false, nil
+	}
+
+	// Otherwise try common API key-ish names.
+	for _, candidate := range []string{"GEMINI_API_KEY", "GeminiAPIKey", "apiKey", "api_key", "apikey"} {
+		if v, ok := creds.GetSecret(sourceAPIName, candidate); ok {
+			return v, true, nil
+		}
+	}
+
+	// If there's exactly one secret, assume it's the API key.
+	names := creds.SecretNames(sourceAPIName)
+	if len(names) == 1 {
+		if v, ok := creds.GetSecret(sourceAPIName, names[0]); ok {
+			return v, true, nil
+		}
+	}
+	return "", false, nil
+}
+
+func readValueOrFile(v string, varName string) (string, error) {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return "", nil
+	}
+	// Some platforms (including Foundry) may inject secrets as file paths.
+	// Treat values that look like paths as file paths and read the contents.
+	if looksLikePath(v) {
+		b, err := os.ReadFile(v)
+		if err != nil {
+			return "", fmt.Errorf("read %s file: %w", varName, err)
+		}
+		return strings.TrimSpace(string(b)), nil
+	}
+	return v, nil
+}
+
+func looksLikePath(v string) bool {
+	// Prefer conservative heuristics to avoid accidentally treating a literal key as a file name.
+	return strings.HasPrefix(v, "/") || strings.HasPrefix(v, "./") || strings.HasPrefix(v, "../") || strings.Contains(v, "/")
 }
 
 func loadPipelineOptionsFromEnv() (pipeline.Options, error) {

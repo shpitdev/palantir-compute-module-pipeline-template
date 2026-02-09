@@ -11,5 +11,8 @@ FROM gcr.io/distroless/static-debian12:nonroot
 
 COPY --from=builder /out/enricher /enricher
 
+# Foundry requires the image user to be numeric. Distroless nonroot maps to uid/gid 65532.
+USER 65532:65532
+
 ENTRYPOINT ["/enricher"]
 CMD ["foundry"]

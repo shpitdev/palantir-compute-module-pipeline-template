@@ -19,9 +19,18 @@ Foundry injects:
 
 You must provide (via compute module configuration):
 
-- `FOUNDRY_URL`: Foundry base URL (example format: `https://<your-stack>.palantirfoundry.com`)
-- `GEMINI_API_KEY`: inject as a secret (do not hardcode)
+- `FOUNDRY_URL`: Foundry base URL or hostname (example formats: `https://<your-stack>.palantirfoundry.com` or `<your-stack>.palantirfoundry.com`)
 - `GEMINI_MODEL`: Gemini model name (do not hardcode in code; configure per environment)
+
+Gemini API key (recommended: Foundry Sources):
+
+- **Option A (Sources, recommended):** configure a Source that stores the Gemini key and injects egress policy.
+  - Foundry will mount a credentials JSON file and set `SOURCE_CREDENTIALS` to its file path.
+  - Configure:
+    - `GEMINI_SOURCE_API_NAME`: the Source "API name" you configured in Data Connection
+    - `GEMINI_SOURCE_SECRET_NAME`: the secret name inside that Source (optional if the key can be inferred)
+- **Option B (env var / secret):** set `GEMINI_API_KEY` directly.
+  - `GEMINI_API_KEY` may be the literal key or a **file path** containing the key.
 
 Optional knobs:
 
@@ -33,15 +42,46 @@ Optional knobs:
 - `GEMINI_CAPTURE_AUDIT` (bool)
 - `GEMINI_BASE_URL` (string; optional base URL override for proxies/testing, not recommended in Foundry)
 
+### Output Write Semantics (Pipeline Mode)
+
+This module supports two output types:
+
+- Snapshot dataset output (dataset transactions + file upload)
+- Stream output (stream-proxy JSON record publish)
+
+By default, the binary runs in `--output-write-mode=auto`, which probes stream-proxy to decide which write path to use.
+
+#### Dataset Output (Transactions)
+
+When executing in pipeline mode with a snapshot dataset output, Foundry may open a transaction on the configured output dataset for the
+duration of the build. During this time you may be unable to create a new transaction on that output dataset/branch.
+
+This binary handles that by:
+
+- Attempting to create a transaction
+- If Foundry responds with `OpenTransactionAlreadyExists`, listing transactions (preview endpoint) and using the latest `OPEN` transaction
+- Uploading the output file into that transaction
+- If the transaction was created by Foundry (the `OpenTransactionAlreadyExists` case), **do not commit**; Foundry will commit as part of the build.
+  If the binary created the transaction (local harness), it will commit after a successful upload.
+
+#### Stream Output (Stream-Proxy)
+
+If the configured output is a stream, this binary writes output rows by publishing JSON records via the stream-proxy API.
+
 ### Egress Policy
 
-The container needs outbound network access to the Gemini API endpoints (and any related Google endpoints required by the SDK/tooling).
+Compute modules run in a zero-trust network model: by default they have no external network access (including other Foundry services).
+You must explicitly configure Sources (network policies) for any network access the module needs.
 
-At minimum, expect to allowlist domains like:
+At minimum, expect to allowlist:
 
 - `generativelanguage.googleapis.com` (Gemini API)
 
 Confirm exact domains from the client library / runtime behavior before locking the policy.
+
+In addition, if your module calls Foundry REST APIs (this repo does), you should plan to allow access to your Foundry stack host
+(the same host used by `FOUNDRY_URL`) via a Source/network policy as well. This does not mean "leaving Foundry"; it is simply
+allowing the container to make HTTPS requests to the stack's API gateway.
 
 ## Image Publishing
 

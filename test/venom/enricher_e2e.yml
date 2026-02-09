@@ -51,21 +51,21 @@ testcases:
     url: "{{.mock.url}}/__debug/calls"
     assertions:
     - result.statuscode ShouldEqual 200
-    - result.bodyjson.bodyjson0.Path ShouldEqual "/api/v1/datasets/{{.input.rid}}/readTable"
-    - result.bodyjson.bodyjson1.Path ShouldEqual "/api/v2/datasets/{{.output.rid}}/transactions"
-    - result.bodyjson.bodyjson2.Path ShouldContainSubstring "/api/v1/datasets/{{.output.rid}}/transactions/"
-    - result.bodyjson.bodyjson2.Path ShouldContainSubstring "/files/enriched.csv"
+    - result.bodyjson.bodyjson0.Path ShouldEqual "/api/v2/datasets/{{.input.rid}}/readTable"
+    - result.bodyjson.bodyjson1.Path ShouldEqual "/stream-proxy/api/streams/{{.output.rid}}/branches/master/records"
+    - result.bodyjson.bodyjson2.Path ShouldEqual "/api/v2/datasets/{{.output.rid}}/transactions"
+    - result.bodyjson.bodyjson3.Path ShouldEqual "/api/v2/datasets/{{.output.rid}}/files/enriched.csv/upload"
     vars:
       txn_id:
-        from: result.bodyjson.bodyjson2.Path
-        regex: "/api/v1/datasets/[^/]+/transactions/([^/]+)/files/enriched\\.csv"
+        from: result.bodyjson.bodyjson4.Path
+        regex: "/api/v2/datasets/[^/]+/transactions/([^/]+)/commit"
 
   - type: http
     method: GET
     url: "{{.mock.url}}/__debug/calls"
     assertions:
     - result.statuscode ShouldEqual 200
-    - result.bodyjson.bodyjson3.Path ShouldEqual "/api/v2/datasets/{{.output.rid}}/transactions/{{.txn_id}}/commit"
+    - result.bodyjson.bodyjson4.Path ShouldEqual "/api/v2/datasets/{{.output.rid}}/transactions/{{.txn_id}}/commit"
 
   - type: http
     method: GET
@@ -78,7 +78,7 @@ testcases:
 
   - type: http
     method: GET
-    url: "{{.mock.url}}/api/v1/datasets/{{.output.rid}}/readTable?format=CSV"
+    url: "{{.mock.url}}/api/v2/datasets/{{.output.rid}}/readTable?format=CSV"
     headers:
       Authorization: "Bearer {{.token}}"
       Accept: text/csv

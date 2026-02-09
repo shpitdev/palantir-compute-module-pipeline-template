@@ -64,32 +64,38 @@ func TestRunFoundry_EndToEndAgainstMock(t *testing.T) {
 		},
 	}
 
-	if err := app.RunFoundry(context.Background(), env, "input", "output", "enriched.csv", pipeline.Options{}, testEnricher{}); err != nil {
+	if err := app.RunFoundry(context.Background(), env, "input", "output", "enriched.csv", "auto", pipeline.Options{}, testEnricher{}); err != nil {
 		t.Fatalf("RunFoundry failed: %v", err)
 	}
 
 	calls := mock.Calls()
-	if len(calls) != 4 {
-		t.Fatalf("expected 4 calls, got %d: %#v", len(calls), calls)
+	if len(calls) != 5 {
+		t.Fatalf("expected 5 calls, got %d: %#v", len(calls), calls)
 	}
-	if calls[0].Path != "/api/v1/datasets/"+inputRID+"/readTable" {
-		t.Fatalf("call[0] path: want %q, got %q (all calls=%#v)", "/api/v1/datasets/"+inputRID+"/readTable", calls[0].Path, calls)
+	if calls[0].Path != "/api/v2/datasets/"+inputRID+"/readTable" {
+		t.Fatalf("call[0] path: want %q, got %q (all calls=%#v)", "/api/v2/datasets/"+inputRID+"/readTable", calls[0].Path, calls)
 	}
-	if calls[1].Path != "/api/v2/datasets/"+outputRID+"/transactions" {
-		t.Fatalf("call[1] path: want %q, got %q (all calls=%#v)", "/api/v2/datasets/"+outputRID+"/transactions", calls[1].Path, calls)
+	wantProbePath := "/stream-proxy/api/streams/" + outputRID + "/branches/master/records"
+	if calls[1].Path != wantProbePath {
+		t.Fatalf("call[1] path: want %q, got %q (all calls=%#v)", wantProbePath, calls[1].Path, calls)
+	}
+	if calls[2].Path != "/api/v2/datasets/"+outputRID+"/transactions" {
+		t.Fatalf("call[2] path: want %q, got %q (all calls=%#v)", "/api/v2/datasets/"+outputRID+"/transactions", calls[2].Path, calls)
 	}
 
-	uploadPrefix := "/api/v1/datasets/" + outputRID + "/transactions/"
-	uploadSuffix := "/files/enriched.csv"
-	if !strings.HasPrefix(calls[2].Path, uploadPrefix) || !strings.HasSuffix(calls[2].Path, uploadSuffix) {
-		t.Fatalf("call[2] path: expected prefix %q and suffix %q, got %q (all calls=%#v)", uploadPrefix, uploadSuffix, calls[2].Path, calls)
+	wantUploadPath := "/api/v2/datasets/" + outputRID + "/files/enriched.csv/upload"
+	if calls[3].Path != wantUploadPath {
+		t.Fatalf("call[3] path: want %q, got %q (all calls=%#v)", wantUploadPath, calls[3].Path, calls)
 	}
-	txnID := strings.TrimSuffix(strings.TrimPrefix(calls[2].Path, uploadPrefix), uploadSuffix)
+
+	commitPrefix := "/api/v2/datasets/" + outputRID + "/transactions/"
+	commitSuffix := "/commit"
+	if !strings.HasPrefix(calls[4].Path, commitPrefix) || !strings.HasSuffix(calls[4].Path, commitSuffix) {
+		t.Fatalf("call[4] path: expected prefix %q and suffix %q, got %q (all calls=%#v)", commitPrefix, commitSuffix, calls[4].Path, calls)
+	}
+	txnID := strings.TrimSuffix(strings.TrimPrefix(calls[4].Path, commitPrefix), commitSuffix)
 	if strings.TrimSpace(txnID) == "" {
-		t.Fatalf("call[2] path: failed to extract transaction id from %q", calls[2].Path)
-	}
-	if calls[3].Path != "/api/v2/datasets/"+outputRID+"/transactions/"+txnID+"/commit" {
-		t.Fatalf("call[3] path: want %q, got %q (all calls=%#v)", "/api/v2/datasets/"+outputRID+"/transactions/"+txnID+"/commit", calls[3].Path, calls)
+		t.Fatalf("call[4] path: failed to extract transaction id from %q", calls[4].Path)
 	}
 
 	uploads := mock.Uploads()
@@ -143,10 +149,155 @@ func TestRunFoundry_EndToEndAgainstMock(t *testing.T) {
 
 	// Verify the extra readTable call was recorded.
 	calls = mock.Calls()
-	if len(calls) != 5 {
-		t.Fatalf("expected 5 calls after readTable, got %d: %#v", len(calls), calls)
+	if len(calls) != 6 {
+		t.Fatalf("expected 6 calls after readTable, got %d: %#v", len(calls), calls)
 	}
-	if calls[4].Path != "/api/v1/datasets/"+outputRID+"/readTable" {
-		t.Fatalf("call[4] path: want %q, got %q (all calls=%#v)", "/api/v1/datasets/"+outputRID+"/readTable", calls[4].Path, calls)
+	if calls[5].Path != "/api/v2/datasets/"+outputRID+"/readTable" {
+		t.Fatalf("call[5] path: want %q, got %q (all calls=%#v)", "/api/v2/datasets/"+outputRID+"/readTable", calls[5].Path, calls)
+	}
+}
+
+func TestRunFoundry_UsesExistingOpenTransactionWhenCreateConflicts(t *testing.T) {
+	t.Parallel()
+
+	inputRID := "ri.foundry.main.dataset.11111111-1111-1111-1111-111111111111"
+	outputRID := "ri.foundry.main.dataset.22222222-2222-2222-2222-222222222222"
+
+	inputDir := t.TempDir()
+	uploadDir := t.TempDir()
+
+	if err := os.WriteFile(
+		filepath.Join(inputDir, inputRID+".csv"),
+		[]byte("email\nalice@example.com\n"),
+		0644,
+	); err != nil {
+		t.Fatalf("write input csv: %v", err)
+	}
+
+	mock := mockfoundry.New(inputDir, uploadDir)
+	mock.RequireBearerToken("dummy-token")
+	ts := httptest.NewServer(mock.Handler())
+	defer ts.Close()
+
+	// Simulate pipeline mode: Foundry build pre-creates an OPEN output transaction.
+	client, err := foundry.NewClient(ts.URL, "dummy-token")
+	if err != nil {
+		t.Fatalf("new foundry client: %v", err)
+	}
+	preTxnID, err := client.CreateTransaction(context.Background(), outputRID, "master")
+	if err != nil {
+		t.Fatalf("pre-create output transaction: %v", err)
+	}
+	beforeCalls := len(mock.Calls())
+
+	env := foundry.Env{
+		FoundryURL: ts.URL,
+		Token:      "dummy-token",
+		Aliases: map[string]foundry.DatasetRef{
+			"input":  {RID: inputRID, Branch: "master"},
+			"output": {RID: outputRID, Branch: "master"},
+		},
+	}
+
+	if err := app.RunFoundry(context.Background(), env, "input", "output", "enriched.csv", "auto", pipeline.Options{}, testEnricher{}); err != nil {
+		t.Fatalf("RunFoundry failed: %v", err)
+	}
+
+	calls := mock.Calls()[beforeCalls:]
+	if len(calls) != 5 {
+		t.Fatalf("expected 5 calls, got %d: %#v", len(calls), calls)
+	}
+	if calls[0].Method != "GET" || calls[0].Path != "/api/v2/datasets/"+inputRID+"/readTable" {
+		t.Fatalf("call[0] mismatch: %#v (all calls=%#v)", calls[0], calls)
+	}
+	wantProbePath := "/stream-proxy/api/streams/" + outputRID + "/branches/master/records"
+	if calls[1].Method != "GET" || calls[1].Path != wantProbePath {
+		t.Fatalf("call[1] mismatch: %#v (all calls=%#v)", calls[1], calls)
+	}
+	if calls[2].Method != "POST" || calls[2].Path != "/api/v2/datasets/"+outputRID+"/transactions" {
+		t.Fatalf("call[2] mismatch: %#v (all calls=%#v)", calls[2], calls)
+	}
+	if calls[3].Method != "GET" || calls[3].Path != "/api/v2/datasets/"+outputRID+"/transactions" {
+		t.Fatalf("call[3] mismatch: %#v (all calls=%#v)", calls[3], calls)
+	}
+
+	wantUploadPath := "/api/v2/datasets/" + outputRID + "/files/enriched.csv/upload"
+	if calls[4].Method != "POST" || calls[4].Path != wantUploadPath {
+		t.Fatalf("call[4] mismatch: %#v (all calls=%#v)", calls[4], calls)
+	}
+
+	uploads := mock.Uploads()
+	if len(uploads) != 1 {
+		t.Fatalf("expected 1 upload, got %d: %#v", len(uploads), uploads)
+	}
+	if uploads[0].DatasetRID != outputRID || uploads[0].TxnID != preTxnID || uploads[0].FilePath != "enriched.csv" {
+		t.Fatalf("unexpected upload metadata: %#v", uploads[0])
+	}
+}
+
+func TestRunFoundry_WritesToStreamProxyWhenOutputIsStream(t *testing.T) {
+	t.Parallel()
+
+	inputRID := "ri.foundry.main.dataset.11111111-1111-1111-1111-111111111111"
+	outputRID := "ri.foundry.main.dataset.22222222-2222-2222-2222-222222222222"
+
+	inputDir := t.TempDir()
+	uploadDir := t.TempDir()
+
+	if err := os.WriteFile(
+		filepath.Join(inputDir, inputRID+".csv"),
+		[]byte("email\nalice@example.com\nbob@corp.test\n"),
+		0644,
+	); err != nil {
+		t.Fatalf("write input csv: %v", err)
+	}
+
+	mock := mockfoundry.New(inputDir, uploadDir)
+	mock.CreateStream(outputRID)
+	mock.RequireBearerToken("dummy-token")
+	ts := httptest.NewServer(mock.Handler())
+	defer ts.Close()
+
+	env := foundry.Env{
+		FoundryURL: ts.URL,
+		Token:      "dummy-token",
+		Aliases: map[string]foundry.DatasetRef{
+			"input":  {RID: inputRID, Branch: "master"},
+			"output": {RID: outputRID, Branch: "master"},
+		},
+	}
+
+	if err := app.RunFoundry(context.Background(), env, "input", "output", "enriched.csv", "auto", pipeline.Options{}, testEnricher{}); err != nil {
+		t.Fatalf("RunFoundry failed: %v", err)
+	}
+
+	calls := mock.Calls()
+	if len(calls) != 4 {
+		t.Fatalf("expected 4 calls, got %d: %#v", len(calls), calls)
+	}
+	if calls[0].Method != "GET" || calls[0].Path != "/api/v2/datasets/"+inputRID+"/readTable" {
+		t.Fatalf("call[0] mismatch: %#v (all calls=%#v)", calls[0], calls)
+	}
+	wantProbePath := "/stream-proxy/api/streams/" + outputRID + "/branches/master/records"
+	if calls[1].Method != "GET" || calls[1].Path != wantProbePath {
+		t.Fatalf("call[1] mismatch: %#v (all calls=%#v)", calls[1], calls)
+	}
+	wantPublishPath := "/stream-proxy/api/streams/" + outputRID + "/branches/master/jsonRecord"
+	if calls[2].Method != "POST" || calls[2].Path != wantPublishPath {
+		t.Fatalf("call[2] mismatch: %#v (all calls=%#v)", calls[2], calls)
+	}
+	if calls[3].Method != "POST" || calls[3].Path != wantPublishPath {
+		t.Fatalf("call[3] mismatch: %#v (all calls=%#v)", calls[3], calls)
+	}
+
+	recs := mock.StreamRecords(outputRID, "master")
+	if len(recs) != 2 {
+		t.Fatalf("expected 2 stream records, got %d: %#v", len(recs), recs)
+	}
+	if recs[0]["email"] != "alice@example.com" || recs[0]["company"] != "example.com" || recs[0]["status"] != "ok" {
+		t.Fatalf("unexpected record[0]: %#v", recs[0])
+	}
+	if recs[1]["email"] != "bob@corp.test" || recs[1]["company"] != "corp.test" || recs[1]["status"] != "ok" {
+		t.Fatalf("unexpected record[1]: %#v", recs[1])
 	}
 }

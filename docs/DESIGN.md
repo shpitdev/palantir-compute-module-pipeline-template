@@ -6,7 +6,7 @@ This project is a pipeline-mode Foundry Compute Module (Go) that runs as a one-s
 
 1. Read input dataset rows (email addresses)
 2. Enrich each email via Gemini (search grounding + URL context + structured output)
-3. Write an output dataset file and commit a transaction
+3. Write an output dataset file into the output dataset transaction (opened by Foundry build, or created in local harness) and commit
 
 This repo should also support a local, non-Foundry run mode for personal use and faster iteration:
 
@@ -42,7 +42,7 @@ Foundry pipeline-mode containers are provided file paths via environment variabl
 Additional configuration this module expects (not injected automatically):
 
 - `FOUNDRY_URL`: Foundry base URL used to call dataset APIs, e.g. `https://<your-stack>.palantirfoundry.com`
-- `GEMINI_API_KEY`: Gemini API key (inject as a secret)
+- `GEMINI_API_KEY`: Gemini API key (inject as a secret), or configure a Foundry Source and read it from `SOURCE_CREDENTIALS`
 - `GEMINI_MODEL`: Gemini model name (inject as config)
 
 Optional Gemini knobs:
@@ -109,20 +109,37 @@ Input is read via the Datasets `readTable` API (sufficient for small batches lik
 
 ### Write
 
-Output is written using the standard dataset transaction flow:
+Output can be written in one of two ways:
 
-1. Create transaction (output dataset + branch)
+- Snapshot dataset output: dataset transactions + file upload
+- Stream output: stream-proxy JSON record publish
+
+The CLI defaults to `--output-write-mode=auto`, which probes stream-proxy to decide which write path to use.
+
+#### Dataset Output (Transactions)
+
+In Foundry pipeline mode, the build system may create the output transaction before starting the module (and creating a new transaction can conflict).
+
+1. Create transaction (output dataset + branch). If this fails with `OpenTransactionAlreadyExists`, list transactions (preview) and use the latest `OPEN` transaction.
 2. Upload file into the transaction (CSV initially; Parquet later if needed)
-3. Commit transaction
+3. If the transaction was created by Foundry (the `OpenTransactionAlreadyExists` case), do not commit; Foundry will commit as part of the build.
+   If the module created the transaction (local harness), commit after upload succeeds.
+
+#### Stream Output (Stream-Proxy)
+
+Write one JSON record per output row via stream-proxy.
 
 ## Foundry API Surface (Minimal)
 
 The module can be implemented with a thin HTTP client hitting a small API surface:
 
-- `GET  /api/v1/datasets/{rid}/readTable`
+- `GET  /api/v2/datasets/{rid}/readTable`
 - `POST /api/v2/datasets/{rid}/transactions`
-- `PUT  /api/v1/datasets/{rid}/transactions/{txn}/files/...`
+- `GET  /api/v2/datasets/{rid}/transactions?preview=true` (preview; used to discover existing `OPEN` transactions)
+- `POST /api/v2/datasets/{rid}/files/{filePath}/upload?transactionRid={txn}`
 - `POST /api/v2/datasets/{rid}/transactions/{txn}/commit`
+- `GET  /stream-proxy/api/streams/{rid}/branches/{branch}/records` (used for write-mode probing)
+- `POST /stream-proxy/api/streams/{rid}/branches/{branch}/jsonRecord`
 
 ## Schema Contract
 
@@ -249,10 +266,11 @@ See `docs/RELEASE.md` for the operational steps and required Foundry configurati
 - Container environment (`https://palantir.com/docs/foundry/compute-modules/containers/`)
 - Execution modes (`https://palantir.com/docs/foundry/compute-modules/execution-modes/`)
 - Custom client spec (function mode) (`https://palantir.com/docs/foundry/compute-modules/advanced-custom-client/`)
-- Datasets readTable (`https://palantir.com/docs/foundry/api/datasets-resources/datasets/read-table/`)
-- Transactions create (`https://palantir.com/docs/foundry/api/datasets-v2-resources/transactions/create-transaction/`)
-- Upload file (`https://palantir.com/docs/foundry/api/datasets-resources/files/upload-file/`)
-- Transactions commit (`https://palantir.com/docs/foundry/api/datasets-resources/transactions/commit-transaction/`)
+- Datasets v2 readTable (`https://palantir.com/docs/foundry/api/datasets-v2-resources/datasets/read-table-dataset/`)
+- Transactions v2 create (`https://palantir.com/docs/foundry/api/datasets-v2-resources/transactions/create-transaction/`)
+- Datasets v2 list transactions (preview) (`https://palantir.com/docs/foundry/api/datasets-v2-resources/datasets/list-transactions-of-dataset/`)
+- Upload file v2 (`https://palantir.com/docs/foundry/api/datasets-v2-resources/files/upload-file/`)
+- Transactions v2 commit (`https://palantir.com/docs/foundry/api/datasets-v2-resources/transactions/commit-transaction/`)
 - Gemini Google Search grounding (`https://ai.google.dev/gemini-api/docs/google-search`)
 - Gemini URL context (`https://ai.google.dev/gemini-api/docs/url-context`)
 - Gemini structured output (`https://ai.google.dev/gemini-api/docs/structured-output`)

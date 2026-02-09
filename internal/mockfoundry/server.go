@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -46,6 +48,10 @@ type Server struct {
 	// heads stores the last committed dataset contents per dataset RID.
 	// This allows read-after-write flows via the same readTable endpoint.
 	heads map[string][]byte
+
+	// streams tracks stream-proxy records per stream RID and branch.
+	// A RID is considered a "stream" if it exists as a key in this map.
+	streams map[string]map[string][]map[string]any
 }
 
 type txnState struct {
@@ -69,7 +75,46 @@ func New(inputDir, uploadDir string) *Server {
 		nextTxn:   1,
 		txns:      make(map[string]txnState),
 		heads:     make(map[string][]byte),
+		streams:   make(map[string]map[string][]map[string]any),
 	}
+}
+
+// CreateStream registers a RID as a stream accessible via the stream-proxy endpoints.
+func (s *Server) CreateStream(streamRID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	streamRID = strings.TrimSpace(streamRID)
+	if streamRID == "" {
+		return
+	}
+	if _, ok := s.streams[streamRID]; !ok {
+		s.streams[streamRID] = make(map[string][]map[string]any)
+	}
+}
+
+// StreamRecords returns a snapshot of records for a given stream RID and branch.
+func (s *Server) StreamRecords(streamRID, branch string) []map[string]any {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	branch = strings.TrimSpace(branch)
+	if branch == "" {
+		branch = "master"
+	}
+	branches, ok := s.streams[streamRID]
+	if !ok {
+		return nil
+	}
+	recs := branches[branch]
+	out := make([]map[string]any, 0, len(recs))
+	for _, r := range recs {
+		// Shallow copy is sufficient for our tests (values are primitives / nil).
+		cp := make(map[string]any, len(r))
+		for k, v := range r {
+			cp[k] = v
+		}
+		out = append(out, cp)
+	}
+	return out
 }
 
 // RequireBearerToken enforces that requests include an Authorization header matching the token.
@@ -91,8 +136,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/__debug/health", s.handleDebugHealth)
 	mux.HandleFunc("/__debug/calls", s.handleDebugCalls)
 	mux.HandleFunc("/__debug/uploads", s.handleDebugUploads)
+	mux.HandleFunc("/__debug/streams", s.handleDebugStreams)
 	mux.HandleFunc("/api/v1/datasets/", s.handleV1Datasets)
 	mux.HandleFunc("/api/v2/datasets/", s.handleV2Datasets)
+	mux.HandleFunc("/stream-proxy/api/streams/", s.handleStreamProxy)
 	return mux
 }
 
@@ -131,6 +178,13 @@ func (s *Server) handleDebugUploads(w http.ResponseWriter, _ *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(out)
+}
+
+func (s *Server) handleDebugStreams(w http.ResponseWriter, _ *http.Request) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(s.streams)
 }
 
 // Calls returns a snapshot of calls made to the server.
@@ -212,6 +266,83 @@ func (s *Server) authorize(w http.ResponseWriter, r *http.Request) bool {
 	return true
 }
 
+func (s *Server) handleStreamProxy(w http.ResponseWriter, r *http.Request) {
+	s.recordCall(r)
+	if !s.authorize(w, r) {
+		return
+	}
+
+	// /stream-proxy/api/streams/{rid}/branches/{branch}/records
+	// /stream-proxy/api/streams/{rid}/branches/{branch}/jsonRecord
+	rest := strings.TrimPrefix(r.URL.Path, "/stream-proxy/api/streams/")
+	parts := strings.Split(rest, "/")
+	if len(parts) != 4 || parts[1] != "branches" {
+		writeAPIError(w, http.StatusNotFound, "NotFound", "NOT_FOUND", map[string]any{"path": r.URL.Path})
+		return
+	}
+	streamRID := parts[0]
+	branch := parts[2]
+	action := parts[3]
+	if strings.TrimSpace(branch) == "" {
+		branch = "master"
+	}
+
+	s.mu.Lock()
+	branches, ok := s.streams[streamRID]
+	if ok && branches == nil {
+		branches = make(map[string][]map[string]any)
+		s.streams[streamRID] = branches
+	}
+	s.mu.Unlock()
+
+	if !ok {
+		writeAPIError(w, http.StatusNotFound, "NotFound", "NOT_FOUND", map[string]any{"streamRid": streamRID})
+		return
+	}
+
+	switch action {
+	case "records":
+		if r.Method != http.MethodGet {
+			writeAPIError(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "METHOD_NOT_ALLOWED", nil)
+			return
+		}
+		recs := s.StreamRecords(streamRID, branch)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(recs)
+		return
+	case "jsonRecord":
+		if r.Method != http.MethodPost {
+			writeAPIError(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "METHOD_NOT_ALLOWED", nil)
+			return
+		}
+		b, err := io.ReadAll(r.Body)
+		if err != nil {
+			writeAPIError(w, http.StatusBadRequest, "InvalidArgument", "BAD_REQUEST", map[string]any{"message": "read body"})
+			return
+		}
+		var rec map[string]any
+		if err := json.Unmarshal(b, &rec); err != nil {
+			writeAPIError(w, http.StatusBadRequest, "InvalidArgument", "BAD_REQUEST", map[string]any{"message": "invalid json"})
+			return
+		}
+		s.mu.Lock()
+		if s.streams[streamRID] == nil {
+			s.streams[streamRID] = make(map[string][]map[string]any)
+		}
+		s.streams[streamRID][branch] = append(s.streams[streamRID][branch], rec)
+		s.mu.Unlock()
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
+		return
+	default:
+		writeAPIError(w, http.StatusNotFound, "NotFound", "NOT_FOUND", map[string]any{"path": r.URL.Path})
+		return
+	}
+}
+
 func (s *Server) handleV1Datasets(w http.ResponseWriter, r *http.Request) {
 	s.recordCall(r)
 	if !s.authorize(w, r) {
@@ -277,6 +408,8 @@ func (s *Server) handleV2Datasets(w http.ResponseWriter, r *http.Request) {
 
 	// /api/v2/datasets/{rid}/transactions
 	// /api/v2/datasets/{rid}/transactions/{txn}/commit
+	// /api/v2/datasets/{rid}/readTable
+	// /api/v2/datasets/{rid}/files/{filePath...}/upload?transactionRid={txn}
 	rest := strings.TrimPrefix(r.URL.Path, "/api/v2/datasets/")
 	parts := strings.Split(rest, "/")
 	if len(parts) < 2 {
@@ -292,11 +425,49 @@ func (s *Server) handleV2Datasets(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if len(parts) == 2 && parts[1] == "transactions" {
+		switch r.Method {
+		case http.MethodGet:
+			s.handleListTransactions(w, r, rid)
+		case http.MethodPost:
+			s.handleCreateTransaction(w, r, rid)
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
+		return
+	}
+
+	if len(parts) == 2 && parts[1] == "readTable" {
+		if r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		s.serveReadTableCSV(w, r, rid)
+		return
+	}
+
+	if len(parts) >= 4 && parts[1] == "files" && parts[len(parts)-1] == "upload" {
 		if r.Method != http.MethodPost {
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
 		}
-		s.handleCreateTransaction(w, r, rid)
+		txnID := strings.TrimSpace(r.URL.Query().Get("transactionRid"))
+		if txnID == "" {
+			txnID = strings.TrimSpace(r.URL.Query().Get("transactionId"))
+		}
+		if txnID == "" || !isSafeToken(txnID) {
+			writeAPIError(w, http.StatusBadRequest, "Conjure:InvalidArgument", "INVALID_ARGUMENT", map[string]any{
+				"transactionRid": txnID,
+			})
+			return
+		}
+		filePath := strings.Join(parts[2:len(parts)-1], "/")
+		if !isSafeFilePath(filePath) {
+			writeAPIError(w, http.StatusBadRequest, "InvalidFilePath", "INVALID_ARGUMENT", map[string]any{
+				"filePath": filePath,
+			})
+			return
+		}
+		s.handleUpload(w, r, rid, txnID, filePath)
 		return
 	}
 
@@ -376,6 +547,82 @@ type transactionResp struct {
 	ClosedTime      *string `json:"closedTime,omitempty"`
 }
 
+type listTransactionsResp struct {
+	Data          []transactionResp `json:"data"`
+	NextPageToken string            `json:"nextPageToken,omitempty"`
+}
+
+func (s *Server) handleListTransactions(w http.ResponseWriter, r *http.Request, datasetRID string) {
+	// Mimic the Foundry docs: this endpoint is preview-gated via preview=true.
+	if strings.TrimSpace(r.URL.Query().Get("preview")) != "true" {
+		writeAPIError(w, http.StatusNotFound, "Default:NotFound", "NOT_FOUND", nil)
+		return
+	}
+
+	pageSize := 0
+	if v := strings.TrimSpace(r.URL.Query().Get("pageSize")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			pageSize = n
+		}
+	}
+
+	type item struct {
+		resp      transactionResp
+		createdAt time.Time
+	}
+
+	s.mu.Lock()
+	items := make([]item, 0, len(s.txns))
+	for txnID, st := range s.txns {
+		if st.datasetRID != datasetRID {
+			continue
+		}
+		createdTime := st.createdAt.UTC().Format(time.RFC3339Nano)
+		var closedTime *string
+		if st.closedAt != nil {
+			s := st.closedAt.UTC().Format(time.RFC3339Nano)
+			closedTime = &s
+		}
+		status := "OPEN"
+		if st.committed {
+			status = "COMMITTED"
+		}
+		items = append(items, item{
+			resp: transactionResp{
+				RID:             txnID,
+				TransactionType: st.txType,
+				Status:          status,
+				CreatedTime:     createdTime,
+				ClosedTime:      closedTime,
+			},
+			createdAt: st.createdAt,
+		})
+	}
+	s.mu.Unlock()
+
+	// Reverse chronological order (newest first), matching Foundry docs.
+	sort.Slice(items, func(i, j int) bool {
+		return items[i].createdAt.After(items[j].createdAt)
+	})
+
+	out := make([]transactionResp, 0, len(items))
+	for _, it := range items {
+		out = append(out, it.resp)
+	}
+	nextPageToken := ""
+	if pageSize > 0 && pageSize < len(out) {
+		out = out[:pageSize]
+		// Pagination isn't needed for this local harness; keep a stable sentinel.
+		nextPageToken = "next"
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(listTransactionsResp{
+		Data:          out,
+		NextPageToken: nextPageToken,
+	})
+}
+
 func (s *Server) handleCreateTransaction(w http.ResponseWriter, r *http.Request, datasetRID string) {
 	var req createTxnReq
 	if r.Body != nil {
@@ -383,6 +630,17 @@ func (s *Server) handleCreateTransaction(w http.ResponseWriter, r *http.Request,
 		if len(b) > 0 {
 			_ = json.Unmarshal(b, &req)
 		}
+	}
+
+	s.mu.Lock()
+	_, isStream := s.streams[datasetRID]
+	s.mu.Unlock()
+	if isStream {
+		writeAPIError(w, http.StatusBadRequest, "InvalidDatasetType", "INVALID_ARGUMENT", map[string]any{
+			"message":    "dataset is a stream; use stream-proxy",
+			"datasetRid": datasetRID,
+		})
+		return
 	}
 
 	s.mu.Lock()
@@ -435,6 +693,17 @@ func (s *Server) handleCreateTransaction(w http.ResponseWriter, r *http.Request,
 }
 
 func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request, datasetRID, txnID, filePath string) {
+	s.mu.Lock()
+	_, isStream := s.streams[datasetRID]
+	s.mu.Unlock()
+	if isStream {
+		writeAPIError(w, http.StatusBadRequest, "InvalidDatasetType", "INVALID_ARGUMENT", map[string]any{
+			"message":    "dataset is a stream; use stream-proxy",
+			"datasetRid": datasetRID,
+		})
+		return
+	}
+
 	s.mu.Lock()
 	txn, ok := s.txns[txnID]
 	s.mu.Unlock()
@@ -521,6 +790,17 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request, datasetRID
 }
 
 func (s *Server) handleCommit(w http.ResponseWriter, _ *http.Request, datasetRID string, txnID string) {
+	s.mu.Lock()
+	_, isStream := s.streams[datasetRID]
+	s.mu.Unlock()
+	if isStream {
+		writeAPIError(w, http.StatusBadRequest, "InvalidDatasetType", "INVALID_ARGUMENT", map[string]any{
+			"message":    "dataset is a stream; use stream-proxy",
+			"datasetRid": datasetRID,
+		})
+		return
+	}
+
 	s.mu.Lock()
 	txn, ok := s.txns[txnID]
 	if !ok || txn.datasetRID != datasetRID {

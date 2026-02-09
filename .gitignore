@@ -50,3 +50,6 @@ opencode.jsonc
 out/
 bin/
 test/artifacts/
+
+# Local scratch data (do not commit)
+data-tmp/
