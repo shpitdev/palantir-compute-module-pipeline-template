@@ -23,6 +23,60 @@ type Client struct {
 	http    *http.Client
 }
 
+type branchResponse struct {
+	Name           string `json:"name"`
+	BranchID       string `json:"branchId"`
+	TransactionRID string `json:"transactionRid"`
+}
+
+// GetBranchTransactionRID returns the most recent OPEN or COMMITTED transaction on the branch.
+// This value can be used to pin a readTable request to a deterministic snapshot.
+func (c *Client) GetBranchTransactionRID(ctx context.Context, datasetRID, branch string) (string, error) {
+	datasetRID = strings.TrimSpace(datasetRID)
+	branch = strings.TrimSpace(branch)
+	if datasetRID == "" {
+		return "", fmt.Errorf("dataset rid is required")
+	}
+	if branch == "" {
+		branch = "master"
+	}
+
+	u := c.resolve(fmt.Sprintf(
+		"/api/v2/datasets/%s/branches/%s",
+		url.PathEscape(datasetRID),
+		url.PathEscape(branch),
+	))
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer func() {
+		_ = resp.Body.Close()
+	}()
+
+	b, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+	if resp.StatusCode/100 != 2 {
+		return "", newHTTPError("getBranch", resp, b)
+	}
+
+	var out branchResponse
+	if err := json.Unmarshal(b, &out); err != nil {
+		return "", fmt.Errorf("parse get branch response: %w", err)
+	}
+	return strings.TrimSpace(out.TransactionRID), nil
+}
+
 // NewClient constructs a client for the Foundry base URL (for example, "https://<stack>.palantirfoundry.com").
 func NewClient(foundryURL, token string) (*Client, error) {
 	raw := strings.TrimSpace(foundryURL)
@@ -55,10 +109,24 @@ func NewClient(foundryURL, token string) (*Client, error) {
 
 // ReadTableCSV reads the dataset as CSV bytes from the (mock) readTable endpoint.
 func (c *Client) ReadTableCSV(ctx context.Context, datasetRID, branch string) ([]byte, error) {
+	branch = strings.TrimSpace(branch)
+	if branch == "" {
+		branch = "master"
+	}
+
+	// Pin to the most recent transaction for deterministic reads. In practice, Foundry API examples
+	// include start/end transaction RIDs; some stacks reject readTable without them.
+	txnRID, err := c.GetBranchTransactionRID(ctx, datasetRID, branch)
+	if err != nil {
+		return nil, err
+	}
+
 	q := url.Values{}
-	if strings.TrimSpace(branch) != "" {
-		// Dataset API v2 uses branchName; branchId is accepted by some older APIs.
-		q.Set("branchName", branch)
+	// Dataset API v2 uses branchName; branchId is accepted by some older APIs.
+	q.Set("branchName", branch)
+	if strings.TrimSpace(txnRID) != "" {
+		q.Set("startTransactionRid", txnRID)
+		q.Set("endTransactionRid", txnRID)
 	}
 	q.Set("format", "CSV")
 

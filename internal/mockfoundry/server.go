@@ -409,6 +409,7 @@ func (s *Server) handleV2Datasets(w http.ResponseWriter, r *http.Request) {
 	// /api/v2/datasets/{rid}/transactions
 	// /api/v2/datasets/{rid}/transactions/{txn}/commit
 	// /api/v2/datasets/{rid}/readTable
+	// /api/v2/datasets/{rid}/branches/{branchName}
 	// /api/v2/datasets/{rid}/files/{filePath...}/upload?transactionRid={txn}
 	rest := strings.TrimPrefix(r.URL.Path, "/api/v2/datasets/")
 	parts := strings.Split(rest, "/")
@@ -442,6 +443,46 @@ func (s *Server) handleV2Datasets(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.serveReadTableCSV(w, r, rid)
+		return
+	}
+
+	if len(parts) == 3 && parts[1] == "branches" {
+		if r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		branchName := strings.TrimSpace(parts[2])
+		if branchName == "" {
+			branchName = "master"
+		}
+
+		// Best-effort: return the most recent OPEN/COMMITTED transaction RID if one exists.
+		// If the dataset has never had a transaction created in the mock, return a stable dummy RID.
+		latestTxnRID := ""
+		var latestTime time.Time
+		s.mu.Lock()
+		for txnID, st := range s.txns {
+			if st.datasetRID != rid {
+				continue
+			}
+			if strings.TrimSpace(st.branch) != branchName {
+				continue
+			}
+			if latestTxnRID == "" || st.createdAt.After(latestTime) {
+				latestTxnRID = txnID
+				latestTime = st.createdAt
+			}
+		}
+		s.mu.Unlock()
+		if strings.TrimSpace(latestTxnRID) == "" {
+			latestTxnRID = "ri.foundry.main.transaction.mock"
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"name":           branchName,
+			"transactionRid": latestTxnRID,
+		})
 		return
 	}
 
