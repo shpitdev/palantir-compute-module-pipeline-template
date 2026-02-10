@@ -136,12 +136,6 @@ func runFoundry(ctx context.Context, args []string) int {
 		return 2
 	}
 
-	env, err := foundry.LoadEnv()
-	if err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "foundry env error: %s\n", util.RedactSecrets(err.Error()))
-		return 2
-	}
-
 	enricher, err := gemini.New(ctx, gemini.Config{
 		APIKey:       gemEnv.APIKey,
 		Model:        *geminiModel,
@@ -153,6 +147,42 @@ func runFoundry(ctx context.Context, args []string) int {
 		return 2
 	}
 
+	// If Foundry provided compute module job polling env vars, run as a standard compute module client.
+	// This keeps the replica responsive and allows the platform to hand us work via GET_JOB_URI.
+	if ccfg, ok, err := loadComputeModuleClientConfigFromEnv(); err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "compute module client config error: %s\n", util.RedactSecrets(err.Error()))
+		return 2
+	} else if ok {
+		handler := func(ctx context.Context, _ computeModuleJobV1) ([]byte, error) {
+			// Re-load per-job env so token files and alias map are picked up correctly.
+			env, err := foundry.LoadEnv()
+			if err != nil {
+				return nil, err
+			}
+			if err := app.RunFoundry(ctx, env, *inputAlias, *outputAlias, *outputFilename, *outputWriteMode, pipeline.Options{
+				Workers:        *workers,
+				MaxRetries:     *maxRetries,
+				RequestTimeout: *requestTimeout,
+				RateLimitRPS:   *rateLimitRPS,
+				FailFast:       *failFast,
+			}, enricher); err != nil {
+				return nil, err
+			}
+			return []byte("ok"), nil
+		}
+		if err := runComputeModuleClientLoop(ctx, ccfg, handler); err != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "compute module client failed: %s\n", util.RedactSecrets(err.Error()))
+			return 1
+		}
+		return 0
+	}
+
+	// Non-client pipeline execution: run once on container start.
+	env, err := foundry.LoadEnv()
+	if err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "foundry env error: %s\n", util.RedactSecrets(err.Error()))
+		return 2
+	}
 	if err := app.RunFoundry(ctx, env, *inputAlias, *outputAlias, *outputFilename, *outputWriteMode, pipeline.Options{
 		Workers:        *workers,
 		MaxRetries:     *maxRetries,
