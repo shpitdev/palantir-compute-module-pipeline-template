@@ -146,7 +146,7 @@ run_test() {
       go test ./... "${extra[@]}"
       ;;
     integration)
-      go test ./internal/app ./internal/mockfoundry ./internal/pipeline ./internal/enrich/worker ./internal/util "${extra[@]}"
+      go test ./internal/app ./pkg/mockfoundry ./examples/email_enricher/pipeline ./pkg/pipeline/io/foundry "${extra[@]}"
       ;;
     e2e)
       go test -tags=gemini_e2e ./... "${extra[@]}"
@@ -171,7 +171,8 @@ main() {
   case "$1" in
     verify)
       shift
-      exec ./godelw verify --apply=false "$@"
+      ./godelw verify --apply=false "$@"
+      exec ./test/scripts/verify_public_modules.sh
       ;;
     test)
       shift
