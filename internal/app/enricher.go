@@ -14,7 +14,7 @@ import (
 	"time"
 
 	"github.com/palantir/palantir-compute-module-pipeline-search/internal/enrich"
-	"github.com/palantir/palantir-compute-module-pipeline-search/internal/foundry"
+	"github.com/palantir/palantir-compute-module-pipeline-search/pkg/foundry"
 	"github.com/palantir/palantir-compute-module-pipeline-search/internal/pipeline"
 	"github.com/palantir/palantir-compute-module-pipeline-search/internal/util"
 )

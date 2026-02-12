@@ -11,7 +11,7 @@ import (
 
 	"github.com/palantir/palantir-compute-module-pipeline-search/internal/app"
 	"github.com/palantir/palantir-compute-module-pipeline-search/internal/enrich/gemini"
-	"github.com/palantir/palantir-compute-module-pipeline-search/internal/foundry"
+	"github.com/palantir/palantir-compute-module-pipeline-search/pkg/foundry"
 	"github.com/palantir/palantir-compute-module-pipeline-search/internal/pipeline"
 	"github.com/palantir/palantir-compute-module-pipeline-search/internal/util"
 )

@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/palantir/palantir-compute-module-pipeline-search/internal/util"
+	"github.com/palantir/palantir-compute-module-pipeline-search/pkg/pipeline/redact"
 )
 
 // conjureErrorEnvelope is the standard error envelope shape used by Foundry APIs.
@@ -91,7 +91,7 @@ func redactAndTruncate(body []byte) string {
 	if len(b) > max {
 		b = b[:max]
 	}
-	s := util.RedactSecrets(string(b))
+	s := redact.Secrets(string(b))
 	s = strings.ReplaceAll(s, "\n", " ")
 	s = strings.ReplaceAll(s, "\r", " ")
 	s = strings.TrimSpace(s)

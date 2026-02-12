@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/palantir/palantir-compute-module-pipeline-search/internal/foundry"
+	"github.com/palantir/palantir-compute-module-pipeline-search/pkg/foundry"
 	"github.com/palantir/palantir-compute-module-pipeline-search/internal/mockfoundry"
 )
 
