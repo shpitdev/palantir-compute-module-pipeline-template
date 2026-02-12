@@ -33,7 +33,7 @@ jobs:
         run: ./godelw verify --apply=false
 
       - name: Verify public package consumers
-        run: ./test/scripts/verify_public_modules.sh
+        run: bash ./test/scripts/verify_public_modules.sh
 
       - name: Build linux/amd64 binary
         run: |
