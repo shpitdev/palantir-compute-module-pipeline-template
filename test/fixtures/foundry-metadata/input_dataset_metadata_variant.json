@@ -1,0 +1,23 @@
+{
+  "datasetRid": "ri.foundry.main.dataset.11111111-1111-1111-1111-111111111111",
+  "datasetMode": "batch",
+  "schema": {
+    "fieldSchemaList": [
+      {
+        "name": "email",
+        "type": "STRING",
+        "nullable": false,
+        "fieldId": "different-id"
+      },
+      {
+        "name": "status",
+        "type": "STRING",
+        "nullable": true,
+        "displayName": "Status"
+      }
+    ]
+  },
+  "metadata": {
+    "arbitrary": "ignored"
+  }
+}
