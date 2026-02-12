@@ -13,6 +13,7 @@ import (
 	"github.com/palantir/palantir-compute-module-pipeline-search/examples/email_enricher/pipeline"
 	"github.com/palantir/palantir-compute-module-pipeline-search/internal/app"
 	"github.com/palantir/palantir-compute-module-pipeline-search/pkg/foundry"
+	"github.com/palantir/palantir-compute-module-pipeline-search/pkg/foundry/keepalive"
 	"github.com/palantir/palantir-compute-module-pipeline-search/pkg/pipeline/redact"
 )
 
@@ -150,13 +151,13 @@ func runFoundry(ctx context.Context, args []string) int {
 	cmCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	keepAlive := false
-	if ccfg, ok, err := loadComputeModuleClientConfigFromEnv(); err != nil {
+	if ccfg, ok, err := keepalive.LoadConfigFromEnv(); err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "compute module client config error: %s\n", redact.Secrets(err.Error()))
 		return 2
 	} else if ok {
 		keepAlive = true
 		go func() {
-			_ = runComputeModuleClientLoop(cmCtx, ccfg, func(context.Context, computeModuleJobV1) ([]byte, error) {
+			_ = keepalive.RunLoop(cmCtx, ccfg, func(context.Context, keepalive.Job) ([]byte, error) {
 				// We don't expose any interactive functions; acknowledge any internal jobs so they don't block routing.
 				return []byte("ok"), nil
 			})

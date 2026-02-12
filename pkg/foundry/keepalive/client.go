@@ -1,4 +1,4 @@
-package main
+package keepalive
 
 import (
 	"bytes"
@@ -20,10 +20,11 @@ import (
 )
 
 type computeModuleJobEnvelope struct {
-	ComputeModuleJobV1 computeModuleJobV1 `json:"computeModuleJobV1"`
+	ComputeModuleJobV1 Job `json:"computeModuleJobV1"`
 }
 
-type computeModuleJobV1 struct {
+// Job represents one internal compute-module job from Foundry runtime endpoints.
+type Job struct {
 	JobID                         string          `json:"jobId"`
 	QueryType                     string          `json:"queryType"`
 	Query                         json.RawMessage `json:"query"`
@@ -31,40 +32,41 @@ type computeModuleJobV1 struct {
 	AuthHeader                    string          `json:"authHeader"`
 }
 
-type computeModuleClientConfig struct {
+// Config controls compute-module keepalive polling.
+type Config struct {
 	GetJobURI       string
 	PostResultURI   string
 	ModuleAuthToken string
 	DefaultCAPath   string
 }
 
-func loadComputeModuleClientConfigFromEnv() (computeModuleClientConfig, bool, error) {
+func LoadConfigFromEnv() (Config, bool, error) {
 	getJob, err := normalizeLocalhostURI(strings.TrimSpace(os.Getenv("GET_JOB_URI")))
 	if err != nil {
-		return computeModuleClientConfig{}, false, fmt.Errorf("invalid GET_JOB_URI: %w", err)
+		return Config{}, false, fmt.Errorf("invalid GET_JOB_URI: %w", err)
 	}
 	postRes, err := normalizeLocalhostURI(strings.TrimSpace(os.Getenv("POST_RESULT_URI")))
 	if err != nil {
-		return computeModuleClientConfig{}, false, fmt.Errorf("invalid POST_RESULT_URI: %w", err)
+		return Config{}, false, fmt.Errorf("invalid POST_RESULT_URI: %w", err)
 	}
 	if getJob == "" || postRes == "" {
-		return computeModuleClientConfig{}, false, nil
+		return Config{}, false, nil
 	}
 
 	modTok, err := readValueOrFile(strings.TrimSpace(os.Getenv("MODULE_AUTH_TOKEN")), "MODULE_AUTH_TOKEN")
 	if err != nil {
-		return computeModuleClientConfig{}, false, err
+		return Config{}, false, err
 	}
 	if strings.TrimSpace(modTok) == "" {
-		return computeModuleClientConfig{}, false, fmt.Errorf("MODULE_AUTH_TOKEN is required when GET_JOB_URI/POST_RESULT_URI are set")
+		return Config{}, false, fmt.Errorf("MODULE_AUTH_TOKEN is required when GET_JOB_URI/POST_RESULT_URI are set")
 	}
 
 	caPath := strings.TrimSpace(os.Getenv("DEFAULT_CA_PATH"))
 	if caPath == "" {
-		return computeModuleClientConfig{}, false, fmt.Errorf("DEFAULT_CA_PATH is required when GET_JOB_URI/POST_RESULT_URI are set")
+		return Config{}, false, fmt.Errorf("DEFAULT_CA_PATH is required when GET_JOB_URI/POST_RESULT_URI are set")
 	}
 
-	return computeModuleClientConfig{
+	return Config{
 		GetJobURI:       getJob,
 		PostResultURI:   postRes,
 		ModuleAuthToken: modTok,
@@ -96,10 +98,11 @@ func normalizeLocalhostURI(raw string) (string, error) {
 	return u.String(), nil
 }
 
-func runComputeModuleClientLoop(ctx context.Context, cfg computeModuleClientConfig, handleJob func(context.Context, computeModuleJobV1) ([]byte, error)) error {
+// RunLoop polls Foundry internal module endpoints and acknowledges jobs.
+func RunLoop(ctx context.Context, cfg Config, handleJob func(context.Context, Job) ([]byte, error)) error {
 	logger := log.New(os.Stdout, "", log.LstdFlags)
 
-	hc, err := newComputeModuleHTTPClient(cfg.DefaultCAPath)
+	hc, err := newHTTPClient(cfg.DefaultCAPath)
 	if err != nil {
 		return err
 	}
@@ -138,7 +141,6 @@ func runComputeModuleClientLoop(ctx context.Context, cfg computeModuleClientConf
 		result, jobErr := handleJob(ctx, job)
 		if jobErr != nil {
 			logger.Printf("compute module client: jobId=%s failed: %s", jobID, redact.Secrets(jobErr.Error()))
-			// Still post a result so the platform can record failure.
 			if len(result) == 0 {
 				result = []byte(redact.Secrets(jobErr.Error()))
 			}
@@ -148,7 +150,6 @@ func runComputeModuleClientLoop(ctx context.Context, cfg computeModuleClientConf
 
 		if err := postResult(ctx, hc, cfg.PostResultURI, cfg.ModuleAuthToken, jobID, result); err != nil {
 			logger.Printf("compute module client: post result failed for jobId=%s: %s", jobID, redact.Secrets(err.Error()))
-			// Retry a few times before moving on.
 			for i := 0; i < 5; i++ {
 				time.Sleep(time.Duration(i+1) * time.Second)
 				if err := postResult(ctx, hc, cfg.PostResultURI, cfg.ModuleAuthToken, jobID, result); err == nil {
@@ -159,7 +160,7 @@ func runComputeModuleClientLoop(ctx context.Context, cfg computeModuleClientConf
 	}
 }
 
-func newComputeModuleHTTPClient(caPath string) (*http.Client, error) {
+func newHTTPClient(caPath string) (*http.Client, error) {
 	b, err := os.ReadFile(caPath)
 	if err != nil {
 		return nil, fmt.Errorf("read DEFAULT_CA_PATH: %w", err)
@@ -175,41 +176,40 @@ func newComputeModuleHTTPClient(caPath string) (*http.Client, error) {
 	return &http.Client{Transport: tr, Timeout: 30 * time.Second}, nil
 }
 
-func getNextJob(ctx context.Context, hc *http.Client, getJobURI, moduleAuthToken string) (computeModuleJobV1, bool, error) {
+func getNextJob(ctx context.Context, hc *http.Client, getJobURI, moduleAuthToken string) (Job, bool, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, getJobURI, nil)
 	if err != nil {
-		return computeModuleJobV1{}, false, err
+		return Job{}, false, err
 	}
 	req.Header.Set("Module-Auth-Token", moduleAuthToken)
 	req.Header.Set("Accept", "application/json")
 
 	resp, err := hc.Do(req)
 	if err != nil {
-		return computeModuleJobV1{}, false, err
+		return Job{}, false, err
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode == http.StatusNoContent {
-		return computeModuleJobV1{}, false, nil
+		return Job{}, false, nil
 	}
 	b, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return computeModuleJobV1{}, false, err
+		return Job{}, false, err
 	}
 	if resp.StatusCode/100 != 2 {
-		return computeModuleJobV1{}, false, fmt.Errorf("GET job: status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(b)))
+		return Job{}, false, fmt.Errorf("GET job: status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(b)))
 	}
 
 	var env computeModuleJobEnvelope
 	if err := json.Unmarshal(b, &env); err != nil {
-		return computeModuleJobV1{}, false, fmt.Errorf("parse GET job response: %w (body=%s)", err, strings.TrimSpace(string(b)))
+		return Job{}, false, fmt.Errorf("parse GET job response: %w (body=%s)", err, strings.TrimSpace(string(b)))
 	}
 	return env.ComputeModuleJobV1, true, nil
 }
 
 func postResult(ctx context.Context, hc *http.Client, postResultURI, moduleAuthToken, jobID string, result []byte) error {
 	base := strings.TrimRight(strings.TrimSpace(postResultURI), "/")
-	// Ensure we don't double-encode slashes.
 	u := base + "/" + path.Clean("/" + jobID)[1:]
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(result))
@@ -229,4 +229,22 @@ func postResult(ctx context.Context, hc *http.Client, postResultURI, moduleAuthT
 		return fmt.Errorf("POST result: status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(b)))
 	}
 	return nil
+}
+
+func readValueOrFile(v string, varName string) (string, error) {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return "", nil
+	}
+	if strings.Contains(v, "\n") || strings.Contains(v, "\r") {
+		return strings.TrimSpace(v), nil
+	}
+	if fi, err := os.Stat(v); err == nil && !fi.IsDir() {
+		b, err := os.ReadFile(v)
+		if err != nil {
+			return "", fmt.Errorf("read %s file: %w", varName, err)
+		}
+		return strings.TrimSpace(string(b)), nil
+	}
+	return v, nil
 }
