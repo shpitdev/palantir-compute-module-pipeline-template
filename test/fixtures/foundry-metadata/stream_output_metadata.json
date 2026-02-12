@@ -1,0 +1,18 @@
+{
+  "datasetRid": "ri.foundry.main.dataset.22222222-2222-2222-2222-222222222222",
+  "datasetType": "STREAM",
+  "schema": {
+    "fieldSchemaList": [
+      {
+        "name": "email",
+        "type": "STRING",
+        "nullable": false
+      },
+      {
+        "name": "status",
+        "type": "STRING",
+        "nullable": true
+      }
+    ]
+  }
+}

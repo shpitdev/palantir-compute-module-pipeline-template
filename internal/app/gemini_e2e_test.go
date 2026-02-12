@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/palantir/palantir-compute-module-pipeline-search/examples/email_enricher/enrich/gemini"
+	"github.com/palantir/palantir-compute-module-pipeline-search/examples/email_enricher/pipeline"
 	"github.com/palantir/palantir-compute-module-pipeline-search/internal/app"
-	"github.com/palantir/palantir-compute-module-pipeline-search/internal/enrich/gemini"
-	"github.com/palantir/palantir-compute-module-pipeline-search/internal/pipeline"
 )
 
 func TestRunLocal_RealGemini_EndToEnd(t *testing.T) {

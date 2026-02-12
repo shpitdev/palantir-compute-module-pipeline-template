@@ -8,3 +8,5 @@ exclude:
     - "out"
     - "bin"
     - "test/artifacts"
+    - "test/consumer"
+    - "test/template"

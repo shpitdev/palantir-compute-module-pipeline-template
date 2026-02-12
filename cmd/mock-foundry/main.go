@@ -7,7 +7,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/palantir/palantir-compute-module-pipeline-search/internal/mockfoundry"
+	"github.com/palantir/palantir-compute-module-pipeline-search/pkg/mockfoundry"
 )
 
 func main() {

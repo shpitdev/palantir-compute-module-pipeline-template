@@ -32,6 +32,9 @@ jobs:
       - name: Verify
         run: ./godelw verify --apply=false
 
+      - name: Verify public package consumers
+        run: bash ./test/scripts/verify_public_modules.sh
+
       - name: Build linux/amd64 binary
         run: |
           mkdir -p out

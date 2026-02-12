@@ -1,0 +1,26 @@
+{
+  "datasetRid": "ri.foundry.main.dataset.11111111-1111-1111-1111-111111111111",
+  "datasetType": "DATASET",
+  "schema": {
+    "fieldSchemaList": [
+      {
+        "name": "email",
+        "type": "STRING",
+        "nullable": false,
+        "fieldId": "f1",
+        "readerClass": "unused"
+      },
+      {
+        "name": "status",
+        "type": "STRING",
+        "nullable": true,
+        "customMetadata": {
+          "foo": "bar"
+        }
+      }
+    ]
+  },
+  "transport": {
+    "readerClass": "com.palantir.foundry.spark.InputReader"
+  }
+}

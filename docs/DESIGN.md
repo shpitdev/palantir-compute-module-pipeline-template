@@ -76,15 +76,17 @@ Local mode should share the same pipeline core as Foundry mode; only I/O adapter
 
 This repo should have a single local verification entrypoint that matches CI (format + lint + test).
 
-If using Palantir godel, the common commands are:
+Primary commands:
 
 | Task | Command |
 | --- | --- |
-| Format | `./godelw format` |
-| Lint | `./godelw lint` |
-| Test | `./godelw test` |
-| Verify | `./godelw verify` |
-| License headers | `./godelw license` |
+| Verify (CI parity + public consumer checks) | `./dev verify` |
+| Unit tests | `./dev test --scope unit` |
+| Integration tests | `./dev test --scope integration` |
+| Gemini E2E tests | `./dev test --scope e2e` |
+| Doctor diagnostics | `./dev doctor` |
+
+Underlying godel tasks remain available (`./godelw format|lint|test|verify|license`).
 
 Tools explicitly not required for this project:
 
@@ -227,24 +229,34 @@ Layer 4: Gemini integration tests (real network)
 ```
 cmd/enricher/main.go
 cmd/mock-foundry/main.go
+examples/
+  email_enricher/
+    enrich/
+      gemini/
+      types.go
+    pipeline/
+      csv.go
+      rows.go
 internal/
   app/
     enricher.go
-  enrich/
-    gemini/
-    types.go
+pkg/
   foundry/
     client.go
     env.go
   mockfoundry/
     server.go
   pipeline/
-    csv.go
-    rows.go
-  util/
-    csv.go
+    core/
+    io/
+      foundry/
+      local/
+    schema/
+    worker/
 test/
+  consumer/
   fixtures/
+  template/
 docker-compose.local.yml
 Dockerfile
 Dockerfile.mock-foundry

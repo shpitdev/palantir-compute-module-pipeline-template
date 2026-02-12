@@ -1,0 +1,226 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "${ROOT_DIR}"
+
+usage() {
+  cat <<'USAGE'
+dev: local developer entrypoint
+
+Usage:
+  ./dev verify
+  ./dev test [--scope unit|integration|e2e] [-- <go test args...>]
+  ./dev run local -- <enricher local args...>
+  ./dev run foundry-emulated
+  ./dev run foundry-mock
+  ./dev e2e
+  ./dev doctor [--json]
+USAGE
+}
+
+require_cmd() {
+  local cmd="$1"
+  if ! command -v "${cmd}" >/dev/null 2>&1; then
+    echo "missing command: ${cmd}" >&2
+    return 1
+  fi
+}
+
+json_escape() {
+  local s="${1//\\/\\\\}"
+  s="${s//\"/\\\"}"
+  s="${s//$'\n'/\\n}"
+  s="${s//$'\r'/}"
+  printf '%s' "${s}"
+}
+
+doctor_text() {
+  local ok=0
+  if require_cmd go; then
+    echo "ok: go ($(go version))"
+  else
+    echo "missing: go"
+    ok=1
+  fi
+  if require_cmd docker; then
+    echo "ok: docker ($(docker --version))"
+  else
+    echo "missing: docker"
+    ok=1
+  fi
+  if [[ -x ./godelw ]]; then
+    echo "ok: ./godelw present"
+  else
+    echo "missing: ./godelw"
+    ok=1
+  fi
+  if [[ -n "${GEMINI_API_KEY:-}" ]]; then
+    echo "ok: GEMINI_API_KEY set"
+  else
+    echo "warn: GEMINI_API_KEY not set"
+  fi
+  if [[ -n "${GEMINI_MODEL:-}" ]]; then
+    echo "ok: GEMINI_MODEL set (${GEMINI_MODEL})"
+  else
+    echo "warn: GEMINI_MODEL not set"
+  fi
+  if [[ -f test/venom/enricher_e2e.yml ]]; then
+    echo "ok: venom test manifest present"
+  else
+    echo "missing: test/venom/enricher_e2e.yml"
+    ok=1
+  fi
+  return "${ok}"
+}
+
+doctor_json() {
+  local have_go=false
+  local have_docker=false
+  local have_godelw=false
+  local have_gemini_key=false
+  local have_gemini_model=false
+  local have_venom_manifest=false
+  local go_version=""
+  local docker_version=""
+
+  if command -v go >/dev/null 2>&1; then
+    have_go=true
+    go_version="$(go version)"
+  fi
+  if command -v docker >/dev/null 2>&1; then
+    have_docker=true
+    docker_version="$(docker --version)"
+  fi
+  if [[ -x ./godelw ]]; then
+    have_godelw=true
+  fi
+  if [[ -n "${GEMINI_API_KEY:-}" ]]; then
+    have_gemini_key=true
+  fi
+  if [[ -n "${GEMINI_MODEL:-}" ]]; then
+    have_gemini_model=true
+  fi
+  if [[ -f test/venom/enricher_e2e.yml ]]; then
+    have_venom_manifest=true
+  fi
+
+  printf '{'
+  printf '"go":{"present":%s,"version":"%s"},' "${have_go}" "$(json_escape "${go_version}")"
+  printf '"docker":{"present":%s,"version":"%s"},' "${have_docker}" "$(json_escape "${docker_version}")"
+  printf '"godelw":{"present":%s},' "${have_godelw}"
+  printf '"env":{"gemini_api_key":%s,"gemini_model":%s},' "${have_gemini_key}" "${have_gemini_model}"
+  printf '"venom":{"manifest_present":%s}' "${have_venom_manifest}"
+  printf '}\n'
+
+  if [[ "${have_go}" != true || "${have_docker}" != true || "${have_godelw}" != true || "${have_venom_manifest}" != true ]]; then
+    return 1
+  fi
+}
+
+run_test() {
+  local scope="unit"
+  local extra=()
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --scope)
+        scope="$2"
+        shift 2
+        ;;
+      --)
+        shift
+        extra=("$@")
+        break
+        ;;
+      *)
+        echo "unknown test arg: $1" >&2
+        usage
+        return 2
+        ;;
+    esac
+  done
+
+  case "${scope}" in
+    unit)
+      go test ./... "${extra[@]}"
+      ;;
+    integration)
+      go test ./internal/app ./pkg/mockfoundry ./examples/email_enricher/pipeline ./pkg/pipeline/io/foundry "${extra[@]}"
+      ;;
+    e2e)
+      go test -tags=gemini_e2e ./... "${extra[@]}"
+      ;;
+    *)
+      echo "invalid scope: ${scope}" >&2
+      return 2
+      ;;
+  esac
+}
+
+run_foundry_emulated() {
+  docker compose -f docker-compose.local.yml up --abort-on-container-exit --build
+}
+
+main() {
+  if [[ $# -lt 1 ]]; then
+    usage
+    return 2
+  fi
+
+  case "$1" in
+    verify)
+      shift
+      ./godelw verify --apply=false "$@"
+      exec ./test/scripts/verify_public_modules.sh
+      ;;
+    test)
+      shift
+      run_test "$@"
+      ;;
+    run)
+      shift
+      if [[ $# -lt 1 ]]; then
+        usage
+        return 2
+      fi
+      case "$1" in
+        local)
+          shift
+          exec go run ./cmd/enricher local "$@"
+          ;;
+        foundry-emulated|foundry-mock)
+          shift
+          run_foundry_emulated "$@"
+          ;;
+        *)
+          echo "unknown run target: $1" >&2
+          return 2
+          ;;
+      esac
+      ;;
+    e2e)
+      shift
+      exec ./test/scripts/venom.sh run test/venom/enricher_e2e.yml "$@"
+      ;;
+    doctor)
+      shift
+      if [[ "${1:-}" == "--json" ]]; then
+        shift
+        doctor_json
+      else
+        doctor_text
+      fi
+      ;;
+    help|-h|--help)
+      usage
+      ;;
+    *)
+      echo "unknown command: $1" >&2
+      usage
+      return 2
+      ;;
+  esac
+}
+
+main "$@"
