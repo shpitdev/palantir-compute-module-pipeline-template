@@ -92,6 +92,47 @@ func TestProcessAll_DoesNotRetryPermanent(t *testing.T) {
 	}
 }
 
+func TestProcessAll_RespectsPerErrorRetryCap(t *testing.T) {
+	t.Parallel()
+
+	var mu sync.Mutex
+	calls := 0
+
+	fn := func(_ context.Context, _ string) (string, error) {
+		mu.Lock()
+		calls++
+		mu.Unlock()
+		return "", &core.LimitedTransientError{
+			Err:          errors.New("cancelled"),
+			ExtraRetries: 1, // one extra retry max
+		}
+	}
+
+	out, err := worker.ProcessAll(context.Background(), []string{"alice@example.com"}, fn, worker.Options{
+		Workers:           1,
+		MaxRetries:        10,
+		FailurePolicy:     worker.FailurePolicyPartialOutput,
+		BackoffInitial:    1 * time.Millisecond,
+		BackoffMax:        1 * time.Millisecond,
+		BackoffJitterFrac: 0,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(out) != 1 {
+		t.Fatalf("expected 1 output, got %d", len(out))
+	}
+	if out[0].Err == nil {
+		t.Fatalf("expected error output, got %#v", out[0])
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if calls != 2 {
+		t.Fatalf("expected 2 calls (1 initial + 1 retry), got %d", calls)
+	}
+}
+
 func TestProcessAll_FailFastStops(t *testing.T) {
 	t.Parallel()
 

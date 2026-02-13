@@ -3,10 +3,15 @@ package app
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
+	"net"
 	"os"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/palantir/palantir-compute-module-pipeline-search/examples/email_enricher/enrich"
 	"github.com/palantir/palantir-compute-module-pipeline-search/examples/email_enricher/pipeline"
@@ -61,6 +66,14 @@ func RunFoundry(
 	enricher enrich.Enricher,
 ) error {
 	logger := log.New(os.Stdout, "", log.LstdFlags)
+	runID := fmt.Sprintf("run-%d", time.Now().UnixNano())
+	logf := func(format string, args ...any) {
+		prefix := make([]any, 0, len(args)+1)
+		prefix = append(prefix, runID)
+		prefix = append(prefix, args...)
+		logger.Printf("run=%s "+format, prefix...)
+	}
+	runStart := time.Now()
 
 	inputRef, ok := env.Aliases[inputAlias]
 	if !ok {
@@ -78,7 +91,7 @@ func RunFoundry(
 	if outputBranch == "" {
 		outputBranch = "master"
 	}
-	logger.Printf(
+	logf(
 		"foundry run start: input=%s@%s output=%s@%s writeMode=%s workers=%d maxRetries=%d timeout=%s rateLimitRPS=%g failFast=%t",
 		inputRef.RID,
 		inputBranch,
@@ -100,43 +113,91 @@ func RunFoundry(
 		return err
 	}
 
+	readStart := time.Now()
 	emails, err := foundryio.ReadInputEmails(ctx, client, inputRef)
 	if err != nil {
 		return err
 	}
-	logger.Printf("loaded %d emails from input dataset", len(emails))
+	logf("loaded %d emails from input dataset in %s", len(emails), time.Since(readStart).Round(time.Millisecond))
 
-	rows, err := pipeline.EnrichEmails(ctx, emails, enricher, opts)
-	if err != nil {
-		return err
-	}
-	logger.Printf("enrichment complete: produced %d rows", len(rows))
-
+	modeStart := time.Now()
 	isStream, err := foundryio.ResolveOutputMode(ctx, client, outputRef, outputWriteMode)
 	if err != nil {
 		return err
 	}
+	mode := "dataset"
+	if isStream {
+		mode = "stream"
+	}
+	logf("resolved output mode=%s in %s", mode, time.Since(modeStart).Round(time.Millisecond))
+
+	enrichStart := time.Now()
+	var rows []pipeline.Row
+	if isStream {
+		logf("incremental mode disabled for stream output; append-only streams require explicit checkpointing for dedupe")
+		rows, err = pipeline.EnrichEmails(ctx, emails, newTracedEnricher(enricher, logger, runID, opts), opts)
+		if err != nil {
+			return err
+		}
+	} else {
+		existingByEmail, err := readExistingOutputRows(ctx, client, outputRef, logger, runID)
+		if err != nil {
+			return err
+		}
+		plan := buildIncrementalPlan(emails, existingByEmail)
+		logf(
+			"incremental plan: inputRows=%d cachedRows=%d rowsToEnrich=%d uniqueEmailsToEnrich=%d",
+			len(emails),
+			plan.cachedRows,
+			plan.pendingRows,
+			len(plan.pendingEmails),
+		)
+		if len(plan.pendingEmails) > 0 {
+			freshRows, err := pipeline.EnrichEmails(ctx, plan.pendingEmails, newTracedEnricher(enricher, logger, runID, opts), opts)
+			if err != nil {
+				return err
+			}
+			if err := plan.applyEnrichedRows(freshRows); err != nil {
+				return err
+			}
+		}
+		rows = plan.rows
+	}
+	okRows, errorRows := countStatuses(rows)
+	logf(
+		"enrichment complete: produced=%d ok=%d error=%d duration=%s",
+		len(rows),
+		okRows,
+		errorRows,
+		time.Since(enrichStart).Round(time.Millisecond),
+	)
 
 	if isStream {
 		branch := strings.TrimSpace(outputRef.Branch)
 		if branch == "" {
 			branch = "master"
 		}
-		logger.Printf("publishing %d rows to stream-proxy (%s@%s)", len(rows), outputRef.RID, branch)
+		writeStart := time.Now()
+		logf("publishing %d rows to stream-proxy (%s@%s)", len(rows), outputRef.RID, branch)
 		records := make([]map[string]any, 0, len(rows))
 		for i, r := range rows {
 			if i == 0 || (i+1)%100 == 0 || i == len(rows)-1 {
-				logger.Printf("stream publish progress: %d/%d", i+1, len(rows))
+				logf("stream publish progress: %d/%d", i+1, len(rows))
 			}
 			records = append(records, rowToStreamRecord(r))
 		}
 		if err := foundryio.PublishJSONRecords(ctx, client, outputRef, records); err != nil {
 			return err
 		}
-		logger.Printf("foundry run complete: stream publish finished")
+		logf(
+			"foundry run complete: stream publish finished writeDuration=%s totalDuration=%s",
+			time.Since(writeStart).Round(time.Millisecond),
+			time.Since(runStart).Round(time.Millisecond),
+		)
 		return nil
 	}
 
+	writeStart := time.Now()
 	var outBuf bytes.Buffer
 	if err := pipeline.WriteCSV(&outBuf, rows); err != nil {
 		return err
@@ -144,7 +205,11 @@ func RunFoundry(
 	if err := foundryio.UploadDatasetCSV(ctx, client, outputRef, outputFilename, outBuf.Bytes()); err != nil {
 		return err
 	}
-	logger.Printf("foundry run complete: dataset output finished")
+	logf(
+		"foundry run complete: dataset output finished writeDuration=%s totalDuration=%s",
+		time.Since(writeStart).Round(time.Millisecond),
+		time.Since(runStart).Round(time.Millisecond),
+	)
 	return nil
 }
 
@@ -172,4 +237,252 @@ func assignNullable(dst map[string]any, key string, value string) {
 		return
 	}
 	dst[key] = value
+}
+
+type tracedEnricher struct {
+	next           enrich.Enricher
+	logger         *log.Logger
+	runID          string
+	maxRetries     int
+	requestTimeout time.Duration
+
+	mu       sync.Mutex
+	attempts map[string]int
+}
+
+func newTracedEnricher(next enrich.Enricher, logger *log.Logger, runID string, opts pipeline.Options) *tracedEnricher {
+	return &tracedEnricher{
+		next:           next,
+		logger:         logger,
+		runID:          runID,
+		maxRetries:     opts.MaxRetries,
+		requestTimeout: opts.RequestTimeout,
+		attempts:       make(map[string]int),
+	}
+}
+
+func (t *tracedEnricher) Enrich(ctx context.Context, email string) (enrich.Result, error) {
+	email = strings.TrimSpace(email)
+	attempt := t.nextAttempt(email)
+	reqJSON, _ := json.Marshal(map[string]any{
+		"email": email,
+	})
+
+	deadlineIn := "none"
+	if d, ok := ctx.Deadline(); ok {
+		deadlineIn = time.Until(d).Round(time.Millisecond).String()
+	}
+	t.logger.Printf(
+		"run=%s enrich request: email=%q attempt=%d timeout=%s deadlineIn=%s request=%s",
+		t.runID,
+		email,
+		attempt,
+		t.requestTimeout,
+		deadlineIn,
+		string(reqJSON),
+	)
+
+	start := time.Now()
+	out, err := t.next.Enrich(ctx, email)
+	elapsed := time.Since(start).Round(time.Millisecond)
+
+	respJSON, _ := json.Marshal(map[string]any{
+		"linkedin_url":       out.LinkedInURL,
+		"company":            out.Company,
+		"title":              out.Title,
+		"description":        out.Description,
+		"confidence":         out.Confidence,
+		"model":              out.Model,
+		"sources":            out.Sources,
+		"web_search_queries": out.WebSearchQueries,
+	})
+
+	if err != nil {
+		maxRetries := maxRetryBudgetForErr(t.maxRetries, err)
+		retryable := isRetryableError(err)
+		willRetry := retryable && attempt <= maxRetries
+		t.logger.Printf(
+			"run=%s enrich response: email=%q attempt=%d duration=%s status=error retryable=%t willRetry=%t maxExtraRetries=%d error=%q partialResponse=%s",
+			t.runID,
+			email,
+			attempt,
+			elapsed,
+			retryable,
+			willRetry,
+			maxRetries,
+			err.Error(),
+			string(respJSON),
+		)
+		return out, err
+	}
+
+	t.logger.Printf(
+		"run=%s enrich response: email=%q attempt=%d duration=%s status=ok response=%s",
+		t.runID,
+		email,
+		attempt,
+		elapsed,
+		string(respJSON),
+	)
+	return out, nil
+}
+
+func (t *tracedEnricher) nextAttempt(email string) int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.attempts[email]++
+	return t.attempts[email]
+}
+
+type retryCap interface {
+	MaxExtraRetries() int
+}
+
+func maxRetryBudgetForErr(defaultMax int, err error) int {
+	if defaultMax < 0 {
+		defaultMax = 0
+	}
+	var capErr retryCap
+	if errors.As(err, &capErr) {
+		capMax := capErr.MaxExtraRetries()
+		if capMax < 0 {
+			capMax = 0
+		}
+		if capMax < defaultMax {
+			return capMax
+		}
+	}
+	return defaultMax
+}
+
+func isRetryableError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var transientErr *enrich.TransientError
+	if errors.As(err, &transientErr) {
+		return true
+	}
+	var limitedTransientErr *enrich.LimitedTransientError
+	if errors.As(err, &limitedTransientErr) {
+		return true
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		return netErr.Timeout() || netErr.Temporary()
+	}
+	return false
+}
+
+type incrementalPlan struct {
+	rows          []pipeline.Row
+	pendingEmails []string
+	pendingIdx    map[string][]int
+	cachedRows    int
+	pendingRows   int
+}
+
+func buildIncrementalPlan(inputEmails []string, existingByEmail map[string]pipeline.Row) incrementalPlan {
+	plan := incrementalPlan{
+		rows:       make([]pipeline.Row, len(inputEmails)),
+		pendingIdx: make(map[string][]int),
+	}
+	for i, raw := range inputEmails {
+		email := strings.TrimSpace(raw)
+		key := emailKey(email)
+
+		if prev, ok := existingByEmail[key]; ok && strings.EqualFold(strings.TrimSpace(prev.Status), "ok") {
+			prev.Email = email
+			plan.rows[i] = prev
+			plan.cachedRows++
+			continue
+		}
+
+		if _, seen := plan.pendingIdx[key]; !seen {
+			plan.pendingEmails = append(plan.pendingEmails, email)
+		}
+		plan.pendingIdx[key] = append(plan.pendingIdx[key], i)
+		plan.pendingRows++
+	}
+	return plan
+}
+
+func (p *incrementalPlan) applyEnrichedRows(rows []pipeline.Row) error {
+	if len(rows) != len(p.pendingEmails) {
+		return fmt.Errorf("incremental enrichment mismatch: got %d rows for %d pending emails", len(rows), len(p.pendingEmails))
+	}
+	for i, email := range p.pendingEmails {
+		key := emailKey(email)
+		idxs, ok := p.pendingIdx[key]
+		if !ok || len(idxs) == 0 {
+			return fmt.Errorf("incremental enrichment mismatch: missing pending indexes for %q", email)
+		}
+		row := rows[i]
+		row.Email = strings.TrimSpace(email)
+		for _, idx := range idxs {
+			p.rows[idx] = row
+		}
+	}
+	return nil
+}
+
+func readExistingOutputRows(
+	ctx context.Context,
+	client *foundry.Client,
+	outputRef foundry.DatasetRef,
+	logger *log.Logger,
+	runID string,
+) (map[string]pipeline.Row, error) {
+	branch := strings.TrimSpace(outputRef.Branch)
+	if branch == "" {
+		branch = "master"
+	}
+
+	b, err := client.ReadTableCSV(ctx, outputRef.RID, branch)
+	if err != nil {
+		if isNotFoundError(err) {
+			logger.Printf("run=%s incremental: no prior output snapshot found for %s@%s", runID, outputRef.RID, branch)
+			return map[string]pipeline.Row{}, nil
+		}
+		return nil, fmt.Errorf("read prior output dataset snapshot: %w", err)
+	}
+
+	rows, err := pipeline.ReadCSV(bytes.NewReader(b))
+	if err != nil {
+		return nil, fmt.Errorf("parse prior output csv: %w", err)
+	}
+
+	out := make(map[string]pipeline.Row, len(rows))
+	for _, row := range rows {
+		key := emailKey(row.Email)
+		if key == "" {
+			continue
+		}
+		out[key] = row
+	}
+	logger.Printf("run=%s incremental: loaded %d prior output rows from %s@%s", runID, len(out), outputRef.RID, branch)
+	return out, nil
+}
+
+func isNotFoundError(err error) bool {
+	var he *foundry.HTTPError
+	return errors.As(err, &he) && he.StatusCode == 404
+}
+
+func emailKey(email string) string {
+	return strings.TrimSpace(email)
+}
+
+func countStatuses(rows []pipeline.Row) (okRows int, errorRows int) {
+	for _, row := range rows {
+		if strings.EqualFold(strings.TrimSpace(row.Status), "ok") {
+			okRows++
+			continue
+		}
+		errorRows++
+	}
+	return okRows, errorRows
 }

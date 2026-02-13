@@ -82,3 +82,22 @@ func TestWriteCSV(t *testing.T) {
 		t.Fatalf("unexpected row: %#v", records[1])
 	}
 }
+
+func TestReadCSV(t *testing.T) {
+	in := strings.Join([]string{
+		strings.Join(pipeline.Header(), ","),
+		"alice@example.com,https://www.linkedin.com/in/alice,Example,Alice,desc,high,ok,,gemini,s1,q1",
+		"",
+	}, "\n")
+
+	rows, err := pipeline.ReadCSV(strings.NewReader(in))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("expected 1 row, got %d", len(rows))
+	}
+	if rows[0].Email != "alice@example.com" || rows[0].Status != "ok" || rows[0].Company != "Example" {
+		t.Fatalf("unexpected row: %#v", rows[0])
+	}
+}

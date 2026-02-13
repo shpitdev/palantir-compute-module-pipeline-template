@@ -90,6 +90,8 @@ Run a long-lived local dev loop (watches input CSV and reruns automatically):
 - starts mock-foundry
 - runs enricher once immediately
 - watches the input CSV for changes (2s polling) and reruns automatically
+- uses `REQUEST_TIMEOUT` per email (default `2m` in local compose)
+- for dataset outputs, reuses previously committed `status=ok` rows by `email` and enriches only new/changed rows
 - validates output after each rerun and prints failures
 - stops cleanly on `Ctrl+C`
 

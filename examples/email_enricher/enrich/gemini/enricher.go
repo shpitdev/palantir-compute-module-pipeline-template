@@ -155,6 +155,14 @@ func classifyErr(err error) error {
 	// Wrap transient failures so the worker pool will retry with backoff.
 	var apiErr genai.APIError
 	if errors.As(err, &apiErr) {
+		if apiErr.Code == 499 || strings.EqualFold(strings.TrimSpace(apiErr.Status), "CANCELLED") {
+			// Retry CANCELLED once. This mitigates transient provider-side cancellations
+			// while avoiding long retry tails for a single record.
+			return &enrich.LimitedTransientError{
+				Err:          err,
+				ExtraRetries: 1,
+			}
+		}
 		if apiErr.Code == 429 || apiErr.Code/100 == 5 {
 			return &enrich.TransientError{Err: err}
 		}

@@ -37,6 +37,7 @@ services:
       GEMINI_MODEL: "${GEMINI_MODEL:-gemini-2.5-flash}"
       GEMINI_BASE_URL: "${GEMINI_BASE_URL:-}"
       GEMINI_CAPTURE_AUDIT: "${GEMINI_CAPTURE_AUDIT:-true}"
+      REQUEST_TIMEOUT: "${REQUEST_TIMEOUT:-2m}"
     volumes:
       - ./test/fixtures:/fixtures:ro
     command: ["foundry"]
