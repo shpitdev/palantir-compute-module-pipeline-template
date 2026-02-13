@@ -47,6 +47,9 @@ func ReadCSV(r io.Reader) ([]Row, error) {
 	}
 	index := make(map[string]int, len(header))
 	for i, name := range header {
+		if i == 0 {
+			name = strings.TrimPrefix(name, "\uFEFF")
+		}
 		index[strings.TrimSpace(name)] = i
 	}
 	for _, name := range Header() {
