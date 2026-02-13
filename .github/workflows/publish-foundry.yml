@@ -54,7 +54,8 @@ jobs:
           fi
 
           if [[ "${GITHUB_REF_TYPE}" == "tag" && "${GITHUB_REF_NAME}" == v* ]]; then
-            tags+=$'\n'"${image_ref}:${GITHUB_REF_NAME}"
+            release_tag="${GITHUB_REF_NAME#v}"
+            tags+=$'\n'"${image_ref}:${release_tag}"
           fi
 
           {

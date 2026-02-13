@@ -111,6 +111,7 @@ Options:
 ## Image Publishing
 
 This repo publishes compute-module images to Foundry via `.github/workflows/publish-foundry.yml`.
+Release version bumps and Git tag creation are automated by `.github/workflows/release-version.yml`.
 
 ### GitHub Secrets Required
 
@@ -123,13 +124,17 @@ This repo publishes compute-module images to Foundry via `.github/workflows/publ
 ### Tagging Behavior
 
 - On `main` pushes: publish `sha-<short-gitsha>` and moving tag `main`.
-- On release tags `v*`: publish both `sha-<short-gitsha>` and `<tag>`.
+- After a successful `main` publish, `release-version` bumps `internal/version/version.go` with a bot PR,
+  auto-merges with a `[skip ci]` squash commit, and creates tag `vX.Y.Z` from that merge commit.
+- On release tags `v*`: publish both `sha-<short-gitsha>` and `<X.Y.Z>` (the leading `v` is removed for image tags).
 - On pull requests: build only (no push) to validate Docker buildability.
 
 ### Permissions
 
 For push to succeed, the CI identity backing `FOUNDRY_TOKEN` needs **Edit** on the target Artifact repository.
 `View` alone can pull but cannot push.
+For automated version bumps, the repository must allow GitHub Actions to open and merge PRs on `main`
+(or grant equivalent bypass/merge permissions for `github-actions[bot]`).
 
 ## Rollout Checklist
 

@@ -12,6 +12,7 @@ import (
 	"github.com/palantir/palantir-compute-module-pipeline-search/examples/email_enricher/enrich/gemini"
 	"github.com/palantir/palantir-compute-module-pipeline-search/examples/email_enricher/pipeline"
 	"github.com/palantir/palantir-compute-module-pipeline-search/internal/app"
+	internalversion "github.com/palantir/palantir-compute-module-pipeline-search/internal/version"
 	"github.com/palantir/palantir-compute-module-pipeline-search/pkg/foundry"
 	"github.com/palantir/palantir-compute-module-pipeline-search/pkg/foundry/keepalive"
 	"github.com/palantir/palantir-compute-module-pipeline-search/pkg/pipeline/redact"
@@ -28,6 +29,9 @@ func main() {
 	switch os.Args[1] {
 	case "help", "-h", "--help":
 		usage(os.Stdout)
+		return
+	case "version", "--version":
+		_, _ = fmt.Fprintln(os.Stdout, internalversion.Current)
 		return
 	case "local":
 		os.Exit(runLocal(ctx, os.Args[2:]))
@@ -204,6 +208,7 @@ Usage:
   enricher <command> [flags]
 
 Commands:
+  version  Print the current release version
   local    Run against a local input CSV (Gemini required)
   foundry  Run in Foundry/pipeline mode (uses BUILD2_TOKEN + RESOURCE_ALIAS_MAP)
 
