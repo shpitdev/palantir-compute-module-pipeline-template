@@ -19,13 +19,14 @@ permissions:
   contents: read
 
 jobs:
-  resolve-tags:
-    name: Resolve tags
+  publish:
+    name: Build and push image
     runs-on: ubuntu-latest
-    outputs:
-      image_ref: ${{ steps.meta.outputs.image_ref }}
-      tags: ${{ steps.meta.outputs.tags }}
     steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
       - name: Resolve tags
         id: meta
         env:
@@ -61,17 +62,6 @@ jobs:
             echo "EOF"
           } >> "${GITHUB_OUTPUT}"
 
-  publish:
-    name: Build and push image
-    needs: [resolve-tags]
-    runs-on: ubuntu-latest
-    outputs:
-      digest: ${{ steps.build.outputs.digest }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: docker/setup-buildx-action@v3
-
       - name: Login to Foundry registry
         if: github.event_name != 'pull_request'
         env:
@@ -93,33 +83,28 @@ jobs:
           file: Dockerfile
           platforms: linux/amd64
           push: ${{ github.event_name != 'pull_request' }}
-          tags: ${{ needs.resolve-tags.outputs.tags }}
+          tags: ${{ steps.meta.outputs.tags }}
           provenance: false
           sbom: false
 
-  summarize:
-    name: Workflow summary
-    needs: [resolve-tags, publish]
-    runs-on: ubuntu-latest
-    if: always()
-    steps:
       - name: Workflow summary
+        if: always()
         run: |
           set -euo pipefail
           {
             echo "## Foundry Docker Publish"
             echo ""
             echo "- Event: \`${GITHUB_EVENT_NAME}\`"
-            echo "- Image: \`${{ needs.resolve-tags.outputs.image_ref }}\`"
+            echo "- Image: \`${{ steps.meta.outputs.image_ref }}\`"
             echo "- Tags:"
             while IFS= read -r tag; do
               [[ -z "${tag}" ]] && continue
               echo "  - \`${tag}\`"
             done <<'EOF'
-          ${{ needs.resolve-tags.outputs.tags }}
+          ${{ steps.meta.outputs.tags }}
           EOF
             if [[ "${GITHUB_EVENT_NAME}" != "pull_request" ]]; then
-              echo "- Digest: \`${{ needs.publish.outputs.digest }}\`"
+              echo "- Digest: \`${{ steps.build.outputs.digest }}\`"
             else
               echo "- Publish: skipped on pull requests"
             fi
