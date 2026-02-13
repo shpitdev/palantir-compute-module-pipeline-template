@@ -35,6 +35,9 @@ jobs:
       - name: Verify public package consumers
         run: bash ./test/scripts/verify_public_modules.sh
 
+      - name: Verify dev CLI behavior
+        run: bash ./test/scripts/dev_cli_test.sh
+
       - name: Build linux/amd64 binary
         run: |
           mkdir -p out

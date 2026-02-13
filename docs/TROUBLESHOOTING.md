@@ -65,3 +65,23 @@ Why it happens:
 Fix:
 
 - Rewrite injected `localhost` URIs to `127.0.0.1` before dialing.
+
+## Local Emulated Flow Fails Preflight
+
+Symptoms:
+
+- `./dev run foundry-emulated` fails before Docker Compose starts.
+- Errors reference missing fixture CSV or unwritable `.local/mock-foundry/*`.
+
+Why it happens:
+
+- The local harness expects input fixture CSVs under `.local/mock-foundry/inputs`.
+- Prior root-owned Docker runs can leave `.local/mock-foundry/uploads` unwritable for the host user.
+
+Fix:
+
+- Ensure input fixture exists at:
+  - `.local/mock-foundry/inputs/<INPUT_RID>.csv`
+- If ownership is broken, run the remediation command printed by preflight (example):
+  - `docker run --rm -v "<repo>/.local:/work" alpine:3 sh -c "chown -R <uid>:<gid> /work"`
+- Run `./dev clean` to reset compose resources and clear uploads while preserving inputs.

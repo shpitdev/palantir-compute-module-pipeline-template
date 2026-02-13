@@ -85,6 +85,8 @@ Primary commands:
 | Integration tests | `./dev test --scope integration` |
 | Gemini E2E tests | `./dev test --scope e2e` |
 | Doctor diagnostics | `./dev doctor` |
+| Local emulated flow (canonical) | `./dev run foundry-emulated` |
+| Reset local emulated harness outputs | `./dev clean` |
 
 Underlying godel tasks remain available (`./godelw format|lint|test|verify|license`).
 

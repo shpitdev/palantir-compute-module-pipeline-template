@@ -74,6 +74,17 @@ Run Foundry-like flow locally (mock dataset API + real Gemini + real container):
 ./dev run foundry-emulated
 ```
 
+`./dev run foundry-emulated` now runs a preflight checklist before compose starts:
+- verifies local fixture/config paths
+- verifies local harness directories are writable
+- attempts an automatic ownership fix for `.local/` when needed
+
+Reset local compose state and clear mock-foundry uploads (inputs are preserved):
+
+```bash
+./dev clean
+```
+
 See `docker-compose.local.yml` for fixture mounts and output paths.
 
 Run CI-style docker-compose E2E (fixed fixtures + output validation):
