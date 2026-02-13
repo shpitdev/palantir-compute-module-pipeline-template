@@ -21,7 +21,6 @@ jobs:
       github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.event == 'push' &&
       github.event.workflow_run.head_branch == 'main' &&
-      github.event.workflow_run.run_attempt == 1 &&
       !contains(github.event.workflow_run.head_commit.message, '[skip ci]')
     runs-on: ubuntu-latest
     env:
@@ -73,7 +72,7 @@ jobs:
         run: |
           set -euo pipefail
           next="${{ steps.version.outputs.next }}"
-          branch="chore/release-v${next}-${GITHUB_RUN_ID}"
+          branch="chore/release-v${next}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           git switch -c "${branch}"
 
           sed -i "s/^const Current = \".*\"$/const Current = \"${next}\"/" internal/version/version.go
