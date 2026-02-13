@@ -3,7 +3,7 @@ name: release-version
 on:
   workflow_run:
     workflows:
-      - publish-foundry
+      - ci
     types:
       - completed
 
