@@ -68,6 +68,7 @@ permission_fix_command() {
 
 preflight_foundry_emulated() {
   local failed=0
+  local non_permission_failed=0
   local permission_issue=0
   local needs_permission_fix=0
   local input_rid=""
@@ -80,6 +81,7 @@ preflight_foundry_emulated() {
   else
     echo "fail: docker is required"
     failed=1
+    non_permission_failed=1
   fi
 
   if [[ -f "${LOCAL_COMPOSE_FILE}" ]]; then
@@ -87,6 +89,7 @@ preflight_foundry_emulated() {
   else
     echo "fail: missing ${LOCAL_COMPOSE_FILE}"
     failed=1
+    non_permission_failed=1
   fi
 
   if [[ -f "${LOCAL_ALIAS_MAP_FILE}" ]]; then
@@ -94,14 +97,15 @@ preflight_foundry_emulated() {
   else
     echo "fail: missing ${LOCAL_ALIAS_MAP_FILE}"
     failed=1
+    non_permission_failed=1
   fi
 
   if mkdir -p "${LOCAL_INPUT_DIR}" "${LOCAL_UPLOAD_DIR}" >/dev/null 2>&1; then
     echo "ok: local harness directories ready"
   else
     echo "fail: could not create ${LOCAL_INPUT_DIR} and ${LOCAL_UPLOAD_DIR}"
-    failed=1
     permission_issue=1
+    needs_permission_fix=1
   fi
 
   if [[ -f "${LOCAL_ALIAS_MAP_FILE}" ]]; then
@@ -109,6 +113,7 @@ preflight_foundry_emulated() {
     if [[ -z "${input_rid}" ]]; then
       echo "fail: could not parse input RID from ${LOCAL_ALIAS_MAP_FILE}"
       failed=1
+      non_permission_failed=1
     else
       input_fixture="${LOCAL_INPUT_DIR}/${input_rid}.csv"
       if [[ -f "${input_fixture}" ]]; then
@@ -116,6 +121,7 @@ preflight_foundry_emulated() {
       else
         echo "fail: missing input fixture (${input_fixture})"
         failed=1
+        non_permission_failed=1
       fi
     fi
   fi
@@ -136,7 +142,7 @@ preflight_foundry_emulated() {
     permission_issue=1
   fi
 
-  if [[ "${needs_permission_fix}" -eq 1 && "${failed}" -eq 0 ]]; then
+  if [[ "${needs_permission_fix}" -eq 1 && "${non_permission_failed}" -eq 0 ]]; then
     echo "info: attempting permission auto-fix for ${LOCAL_MOCK_ROOT}"
     if docker run --rm -v "${ROOT_DIR}/.local:/work" alpine:3 sh -c "chown -R $(id -u):$(id -g) /work" >/dev/null 2>&1; then
       echo "ok: permission auto-fix completed"
@@ -277,6 +283,7 @@ dotenv_lookup() {
   [[ -f "${dotenv_path}" ]] || return 1
   (
     set -a
+    set +u
     # shellcheck disable=SC1090
     source "${dotenv_path}"
     eval "printf '%s' \"\${${key}:-}\""
