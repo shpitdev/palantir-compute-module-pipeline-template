@@ -116,7 +116,7 @@ This repo publishes compute-module images to Foundry via `.github/workflows/publ
 
 - `FOUNDRY_ARTIFACT_REPOSITORY_RID`: artifact repository RID used as the `docker login` username.
 - `FOUNDRY_TOKEN`: token used as the `docker login` password.
-- `FOUNDRY_REGISTRY_HOST`: Foundry container registry host (example: `baryte-container-registry.palantirfoundry.com`).
+- `FOUNDRY_REGISTRY_HOST`: Foundry container registry host (example: `<your-stack>-container-registry.palantirfoundry.com`).
 - `FOUNDRY_DOCKER_IMAGE_NAME`: image name in the registry (example: `email-enrichment-google`).
 - `FOUNDRY_URL`: stack URL (kept for related workflows and docs consistency).
 
