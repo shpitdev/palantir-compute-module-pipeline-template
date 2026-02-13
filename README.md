@@ -51,6 +51,8 @@ Real e2e test run (Gemini + Foundry-emulated docker-compose):
 ./dev test
 ```
 
+`./dev test` performs real Gemini calls and fails if committed output contains any `status=error` rows.
+
 Preflight diagnostics:
 
 ```bash
@@ -83,6 +85,42 @@ Run a long-lived local dev loop (watches input CSV and reruns automatically):
 - verifies local fixture/config paths
 - verifies local harness directories are writable
 - attempts an automatic ownership fix for `.local/` when needed
+
+`./dev run foundry-emulated --watch`:
+- starts mock-foundry
+- runs enricher once immediately
+- watches the input CSV for changes (2s polling) and reruns automatically
+- validates output after each rerun and prints failures
+- stops cleanly on `Ctrl+C`
+
+### Local Watch Loop Quickstart
+
+1. Set a valid Gemini key in `.env`:
+
+```bash
+GEMINI_API_KEY=...
+# GEMINI_MODEL is optional (default: gemini-2.5-flash)
+```
+
+2. Edit input rows in:
+
+```bash
+.local/mock-foundry/inputs/ri.foundry.main.dataset.11111111-1111-1111-1111-111111111111.csv
+```
+
+3. Start the local loop:
+
+```bash
+./dev run foundry-emulated --watch
+```
+
+4. Read latest committed output at:
+
+```bash
+.local/mock-foundry/uploads/ri.foundry.main.dataset.22222222-2222-2222-2222-222222222222/_committed/readTable.csv
+```
+
+5. Change and save the input CSV again to trigger another run.
 
 Reset local compose state and clear mock-foundry uploads (inputs are preserved):
 
