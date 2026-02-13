@@ -54,11 +54,13 @@ testcases:
     - result.bodyjson.bodyjson0.Path ShouldEqual "/api/v2/datasets/{{.input.rid}}/branches/master"
     - result.bodyjson.bodyjson1.Path ShouldEqual "/api/v2/datasets/{{.input.rid}}/readTable"
     - result.bodyjson.bodyjson2.Path ShouldEqual "/stream-proxy/api/streams/{{.output.rid}}/branches/master/records"
-    - result.bodyjson.bodyjson3.Path ShouldEqual "/api/v2/datasets/{{.output.rid}}/transactions"
-    - result.bodyjson.bodyjson4.Path ShouldEqual "/api/v2/datasets/{{.output.rid}}/files/enriched.csv/upload"
+    - result.bodyjson.bodyjson3.Path ShouldEqual "/api/v2/datasets/{{.output.rid}}/branches/master"
+    - result.bodyjson.bodyjson4.Path ShouldEqual "/api/v2/datasets/{{.output.rid}}/readTable"
+    - result.bodyjson.bodyjson5.Path ShouldEqual "/api/v2/datasets/{{.output.rid}}/transactions"
+    - result.bodyjson.bodyjson6.Path ShouldEqual "/api/v2/datasets/{{.output.rid}}/files/enriched.csv/upload"
     vars:
       txn_id:
-        from: result.bodyjson.bodyjson5.Path
+        from: result.bodyjson.bodyjson7.Path
         regex: "/api/v2/datasets/[^/]+/transactions/([^/]+)/commit"
 
   - type: http
@@ -66,7 +68,7 @@ testcases:
     url: "{{.mock.url}}/__debug/calls"
     assertions:
     - result.statuscode ShouldEqual 200
-    - result.bodyjson.bodyjson5.Path ShouldEqual "/api/v2/datasets/{{.output.rid}}/transactions/{{.txn_id}}/commit"
+    - result.bodyjson.bodyjson7.Path ShouldEqual "/api/v2/datasets/{{.output.rid}}/transactions/{{.txn_id}}/commit"
 
   - type: http
     method: GET
@@ -88,6 +90,27 @@ testcases:
     - result.body ShouldContainSubstring "email,linkedin_url,company,title,description,confidence,status,error,model,sources,web_search_queries"
     - result.body ShouldContainSubstring "alice@example.com"
     - result.body ShouldContainSubstring "bob@corp.test"
+    - result.body ShouldContainSubstring ",ok,,"
+    - result.body ShouldNotContainSubstring ",error,\""
+
+  - type: exec
+    script: |
+      set -eu
+      cd "$(git rev-parse --show-toplevel)"
+      csv_path="test/artifacts/mock-foundry/uploads/{{.output.rid}}/_committed/readTable.csv"
+      test -f "${csv_path}"
+      if tail -n +2 "${csv_path}" | grep -q ',error,'; then
+        echo "committed output contains error rows:" >&2
+        cat "${csv_path}" >&2
+        exit 1
+      fi
+      if ! tail -n +2 "${csv_path}" | grep -q ',ok,'; then
+        echo "committed output contains no successful rows:" >&2
+        cat "${csv_path}" >&2
+        exit 1
+      fi
+    assertions:
+    - result.code ShouldEqual 0
 
   - type: exec
     script: |

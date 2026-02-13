@@ -45,13 +45,13 @@ Verify (CI parity + external consumer checks):
 ./dev verify
 ```
 
-Targeted tests:
+Real e2e test run (Gemini + Foundry-emulated docker-compose):
 
 ```bash
-./dev test --scope unit
-./dev test --scope integration
-./dev test --scope e2e
+./dev test
 ```
+
+`./dev test` performs real Gemini calls and fails if committed output contains any `status=error` rows.
 
 Preflight diagnostics:
 
@@ -64,14 +64,70 @@ Run locally (no Foundry required, Gemini required):
 
 ```bash
 export GEMINI_API_KEY=...
-export GEMINI_MODEL=gemini-2.5-flash
 ./dev run local -- --input /path/to/emails.csv --output /path/to/enriched.csv
 ```
+
+`GEMINI_MODEL` is optional; default is `gemini-2.5-flash`.
 
 Run Foundry-like flow locally (mock dataset API + real Gemini + real container):
 
 ```bash
 ./dev run foundry-emulated
+```
+
+Run a long-lived local dev loop (watches input CSV and reruns automatically):
+
+```bash
+./dev run foundry-emulated --watch
+```
+
+`./dev run foundry-emulated` now runs a preflight checklist before compose starts:
+- verifies local fixture/config paths
+- verifies local harness directories are writable
+- attempts an automatic ownership fix for `.local/` when needed
+
+`./dev run foundry-emulated --watch`:
+- starts mock-foundry
+- runs enricher once immediately
+- watches the input CSV for changes (2s polling) and reruns automatically
+- uses `REQUEST_TIMEOUT` per email (default `2m` in local compose)
+- for dataset outputs, reuses previously committed `status=ok` rows by `email` and enriches only new/changed rows
+- validates output after each rerun and prints failures
+- stops cleanly on `Ctrl+C`
+
+### Local Watch Loop Quickstart
+
+1. Set a valid Gemini key in `.env`:
+
+```bash
+GEMINI_API_KEY=...
+# GEMINI_MODEL is optional (default: gemini-2.5-flash)
+```
+
+2. Edit input rows in:
+
+```bash
+.local/mock-foundry/inputs/ri.foundry.main.dataset.11111111-1111-1111-1111-111111111111.csv
+```
+
+3. Start the local loop:
+
+```bash
+./dev run foundry-emulated --watch
+```
+
+4. Read latest committed output at:
+
+```bash
+.local/mock-foundry/uploads/ri.foundry.main.dataset.22222222-2222-2222-2222-222222222222/_committed/readTable.csv
+```
+
+5. Change and save the input CSV again to trigger another run.
+
+Reset local compose state and clear mock-foundry uploads (inputs are preserved):
+
+```bash
+./dev clean
 ```
 
 See `docker-compose.local.yml` for fixture mounts and output paths.
@@ -80,8 +136,7 @@ Run CI-style docker-compose E2E (fixed fixtures + output validation):
 
 ```bash
 export GEMINI_API_KEY=...
-export GEMINI_MODEL=gemini-2.5-flash
-./dev e2e -v
+./dev test -v
 ```
 
 Note: CI jobs that require Gemini secrets are skipped automatically if `GEMINI_API_KEY` / `GEMINI_MODEL` GitHub secrets are not configured.

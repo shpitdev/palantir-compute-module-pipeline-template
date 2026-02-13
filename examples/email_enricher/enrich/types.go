@@ -29,3 +29,6 @@ type Enricher interface {
 
 // TransientError marks an error as retryable by pipeline workers.
 type TransientError = core.TransientError
+
+// LimitedTransientError marks an error as retryable with a per-error retry cap.
+type LimitedTransientError = core.LimitedTransientError

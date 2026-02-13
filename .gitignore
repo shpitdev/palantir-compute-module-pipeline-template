@@ -52,7 +52,10 @@ bin/
 test/artifacts/
 
 # Venom local output (venom defaults to ./venom.log)
-venom.log
+venom.*log
 
 # Local scratch data (do not commit)
 data-tmp/
+
+# Local parquet docs snapshot
+docs.parquet

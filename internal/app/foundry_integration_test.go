@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/palantir/palantir-compute-module-pipeline-search/examples/email_enricher/enrich"
@@ -72,8 +73,8 @@ func TestRunFoundry_EndToEndAgainstMock(t *testing.T) {
 	}
 
 	calls := mock.Calls()
-	if len(calls) != 6 {
-		t.Fatalf("expected 6 calls, got %d: %#v", len(calls), calls)
+	if len(calls) != 8 {
+		t.Fatalf("expected 8 calls, got %d: %#v", len(calls), calls)
 	}
 	if calls[0].Path != "/api/v2/datasets/"+inputRID+"/branches/master" {
 		t.Fatalf("call[0] path: want %q, got %q (all calls=%#v)", "/api/v2/datasets/"+inputRID+"/branches/master", calls[0].Path, calls)
@@ -85,23 +86,29 @@ func TestRunFoundry_EndToEndAgainstMock(t *testing.T) {
 	if calls[2].Path != wantProbePath {
 		t.Fatalf("call[2] path: want %q, got %q (all calls=%#v)", wantProbePath, calls[2].Path, calls)
 	}
-	if calls[3].Path != "/api/v2/datasets/"+outputRID+"/transactions" {
-		t.Fatalf("call[3] path: want %q, got %q (all calls=%#v)", "/api/v2/datasets/"+outputRID+"/transactions", calls[3].Path, calls)
+	if calls[3].Path != "/api/v2/datasets/"+outputRID+"/branches/master" {
+		t.Fatalf("call[3] path: want %q, got %q (all calls=%#v)", "/api/v2/datasets/"+outputRID+"/branches/master", calls[3].Path, calls)
+	}
+	if calls[4].Path != "/api/v2/datasets/"+outputRID+"/readTable" {
+		t.Fatalf("call[4] path: want %q, got %q (all calls=%#v)", "/api/v2/datasets/"+outputRID+"/readTable", calls[4].Path, calls)
+	}
+	if calls[5].Path != "/api/v2/datasets/"+outputRID+"/transactions" {
+		t.Fatalf("call[5] path: want %q, got %q (all calls=%#v)", "/api/v2/datasets/"+outputRID+"/transactions", calls[5].Path, calls)
 	}
 
 	wantUploadPath := "/api/v2/datasets/" + outputRID + "/files/enriched.csv/upload"
-	if calls[4].Path != wantUploadPath {
-		t.Fatalf("call[4] path: want %q, got %q (all calls=%#v)", wantUploadPath, calls[4].Path, calls)
+	if calls[6].Path != wantUploadPath {
+		t.Fatalf("call[6] path: want %q, got %q (all calls=%#v)", wantUploadPath, calls[6].Path, calls)
 	}
 
 	commitPrefix := "/api/v2/datasets/" + outputRID + "/transactions/"
 	commitSuffix := "/commit"
-	if !strings.HasPrefix(calls[5].Path, commitPrefix) || !strings.HasSuffix(calls[5].Path, commitSuffix) {
-		t.Fatalf("call[5] path: expected prefix %q and suffix %q, got %q (all calls=%#v)", commitPrefix, commitSuffix, calls[5].Path, calls)
+	if !strings.HasPrefix(calls[7].Path, commitPrefix) || !strings.HasSuffix(calls[7].Path, commitSuffix) {
+		t.Fatalf("call[7] path: expected prefix %q and suffix %q, got %q (all calls=%#v)", commitPrefix, commitSuffix, calls[7].Path, calls)
 	}
-	txnID := strings.TrimSuffix(strings.TrimPrefix(calls[5].Path, commitPrefix), commitSuffix)
+	txnID := strings.TrimSuffix(strings.TrimPrefix(calls[7].Path, commitPrefix), commitSuffix)
 	if strings.TrimSpace(txnID) == "" {
-		t.Fatalf("call[5] path: failed to extract transaction id from %q", calls[5].Path)
+		t.Fatalf("call[7] path: failed to extract transaction id from %q", calls[7].Path)
 	}
 
 	uploads := mock.Uploads()
@@ -155,14 +162,14 @@ func TestRunFoundry_EndToEndAgainstMock(t *testing.T) {
 
 	// Verify the extra readTable call was recorded.
 	calls = mock.Calls()
-	if len(calls) != 8 {
-		t.Fatalf("expected 8 calls after readTable, got %d: %#v", len(calls), calls)
+	if len(calls) != 10 {
+		t.Fatalf("expected 10 calls after readTable, got %d: %#v", len(calls), calls)
 	}
-	if calls[6].Path != "/api/v2/datasets/"+outputRID+"/branches/master" {
-		t.Fatalf("call[6] path: want %q, got %q (all calls=%#v)", "/api/v2/datasets/"+outputRID+"/branches/master", calls[6].Path, calls)
+	if calls[8].Path != "/api/v2/datasets/"+outputRID+"/branches/master" {
+		t.Fatalf("call[8] path: want %q, got %q (all calls=%#v)", "/api/v2/datasets/"+outputRID+"/branches/master", calls[8].Path, calls)
 	}
-	if calls[7].Path != "/api/v2/datasets/"+outputRID+"/readTable" {
-		t.Fatalf("call[7] path: want %q, got %q (all calls=%#v)", "/api/v2/datasets/"+outputRID+"/readTable", calls[7].Path, calls)
+	if calls[9].Path != "/api/v2/datasets/"+outputRID+"/readTable" {
+		t.Fatalf("call[9] path: want %q, got %q (all calls=%#v)", "/api/v2/datasets/"+outputRID+"/readTable", calls[9].Path, calls)
 	}
 }
 
@@ -216,8 +223,8 @@ func TestRunFoundry_UsesExistingOpenTransactionWhenCreateConflicts(t *testing.T)
 	}
 
 	calls := mock.Calls()[beforeCalls:]
-	if len(calls) != 6 {
-		t.Fatalf("expected 6 calls, got %d: %#v", len(calls), calls)
+	if len(calls) != 8 {
+		t.Fatalf("expected 8 calls, got %d: %#v", len(calls), calls)
 	}
 	if calls[0].Method != "GET" || calls[0].Path != "/api/v2/datasets/"+inputRID+"/branches/master" {
 		t.Fatalf("call[0] mismatch: %#v (all calls=%#v)", calls[0], calls)
@@ -229,16 +236,22 @@ func TestRunFoundry_UsesExistingOpenTransactionWhenCreateConflicts(t *testing.T)
 	if calls[2].Method != "GET" || calls[2].Path != wantProbePath {
 		t.Fatalf("call[2] mismatch: %#v (all calls=%#v)", calls[2], calls)
 	}
-	if calls[3].Method != "POST" || calls[3].Path != "/api/v2/datasets/"+outputRID+"/transactions" {
+	if calls[3].Method != "GET" || calls[3].Path != "/api/v2/datasets/"+outputRID+"/branches/master" {
 		t.Fatalf("call[3] mismatch: %#v (all calls=%#v)", calls[3], calls)
 	}
-	if calls[4].Method != "GET" || calls[4].Path != "/api/v2/datasets/"+outputRID+"/transactions" {
+	if calls[4].Method != "GET" || calls[4].Path != "/api/v2/datasets/"+outputRID+"/readTable" {
 		t.Fatalf("call[4] mismatch: %#v (all calls=%#v)", calls[4], calls)
+	}
+	if calls[5].Method != "POST" || calls[5].Path != "/api/v2/datasets/"+outputRID+"/transactions" {
+		t.Fatalf("call[5] mismatch: %#v (all calls=%#v)", calls[5], calls)
+	}
+	if calls[6].Method != "GET" || calls[6].Path != "/api/v2/datasets/"+outputRID+"/transactions" {
+		t.Fatalf("call[6] mismatch: %#v (all calls=%#v)", calls[6], calls)
 	}
 
 	wantUploadPath := "/api/v2/datasets/" + outputRID + "/files/enriched.csv/upload"
-	if calls[5].Method != "POST" || calls[5].Path != wantUploadPath {
-		t.Fatalf("call[5] mismatch: %#v (all calls=%#v)", calls[5], calls)
+	if calls[7].Method != "POST" || calls[7].Path != wantUploadPath {
+		t.Fatalf("call[7] mismatch: %#v (all calls=%#v)", calls[7], calls)
 	}
 
 	uploads := mock.Uploads()
@@ -247,6 +260,96 @@ func TestRunFoundry_UsesExistingOpenTransactionWhenCreateConflicts(t *testing.T)
 	}
 	if uploads[0].DatasetRID != outputRID || uploads[0].TxnID != preTxnID || uploads[0].FilePath != "enriched.csv" {
 		t.Fatalf("unexpected upload metadata: %#v", uploads[0])
+	}
+}
+
+type countingEnricher struct {
+	mu    sync.Mutex
+	calls map[string]int
+}
+
+func (c *countingEnricher) Enrich(_ context.Context, email string) (enrich.Result, error) {
+	c.mu.Lock()
+	if c.calls == nil {
+		c.calls = make(map[string]int)
+	}
+	c.calls[email]++
+	c.mu.Unlock()
+
+	domain := ""
+	if at := strings.LastIndex(email, "@"); at >= 0 && at+1 < len(email) {
+		domain = email[at+1:]
+	}
+	return enrich.Result{
+		Company:    domain,
+		Confidence: "test",
+		Model:      "test-model",
+	}, nil
+}
+
+func (c *countingEnricher) count(email string) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.calls[email]
+}
+
+func TestRunFoundry_IncrementalDatasetSkipsCachedRows(t *testing.T) {
+	t.Parallel()
+
+	inputRID := "ri.foundry.main.dataset.11111111-1111-1111-1111-111111111111"
+	outputRID := "ri.foundry.main.dataset.22222222-2222-2222-2222-222222222222"
+
+	inputDir := t.TempDir()
+	uploadDir := t.TempDir()
+
+	writeInput := func(content string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(inputDir, inputRID+".csv"), []byte(content), 0644); err != nil {
+			t.Fatalf("write input csv: %v", err)
+		}
+	}
+	writeInput("email\nalice@example.com\nbob@corp.test\n")
+
+	mock := mockfoundry.New(inputDir, uploadDir)
+	mock.RequireBearerToken("dummy-token")
+	ts := httptest.NewServer(mock.Handler())
+	defer ts.Close()
+
+	env := foundry.Env{
+		Services: foundry.Services{
+			APIGateway:  ts.URL + "/api",
+			StreamProxy: ts.URL + "/stream-proxy/api",
+		},
+		Token: "dummy-token",
+		Aliases: map[string]foundry.DatasetRef{
+			"input":  {RID: inputRID, Branch: "master"},
+			"output": {RID: outputRID, Branch: "master"},
+		},
+	}
+
+	enricher := &countingEnricher{}
+
+	if err := app.RunFoundry(context.Background(), env, "input", "output", "enriched.csv", "dataset", pipeline.Options{}, enricher); err != nil {
+		t.Fatalf("first RunFoundry failed: %v", err)
+	}
+	if enricher.count("alice@example.com") != 1 || enricher.count("bob@corp.test") != 1 {
+		t.Fatalf("unexpected first-run call counts: alice=%d bob=%d", enricher.count("alice@example.com"), enricher.count("bob@corp.test"))
+	}
+
+	writeInput("email\nalice@example.com\nbob@corp.test\ncarol@new.test\n")
+
+	if err := app.RunFoundry(context.Background(), env, "input", "output", "enriched.csv", "dataset", pipeline.Options{}, enricher); err != nil {
+		t.Fatalf("second RunFoundry failed: %v", err)
+	}
+
+	if enricher.count("alice@example.com") != 1 {
+		t.Fatalf("expected alice to be cached on second run, got %d calls", enricher.count("alice@example.com"))
+	}
+	if enricher.count("bob@corp.test") != 1 {
+		t.Fatalf("expected bob to be cached on second run, got %d calls", enricher.count("bob@corp.test"))
+	}
+	if enricher.count("carol@new.test") != 1 {
+		t.Fatalf("expected carol to be enriched once, got %d calls", enricher.count("carol@new.test"))
 	}
 }
 

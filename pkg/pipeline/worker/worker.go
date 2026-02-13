@@ -181,10 +181,8 @@ func processWithRetry[In any, Out any](
 	limiter *rate.Limiter,
 	opts Options,
 ) (Out, error) {
-	var lastErr error
 	var lastOut Out
-	attempts := 1 + opts.MaxRetries
-	for attempt := 0; attempt < attempts; attempt++ {
+	for attempt := 0; ; attempt++ {
 		if err := ctx.Err(); err != nil {
 			return lastOut, err
 		}
@@ -211,8 +209,8 @@ func processWithRetry[In any, Out any](
 		if errors.Is(err, context.Canceled) && ctx.Err() != nil {
 			return lastOut, ctx.Err()
 		}
-		lastErr = err
-		if !isTransient(err) || attempt == attempts-1 {
+		maxRetries := maxExtraRetries(opts.MaxRetries, err)
+		if !isTransient(err) || attempt >= maxRetries {
 			return lastOut, err
 		}
 
@@ -225,7 +223,27 @@ func processWithRetry[In any, Out any](
 			return lastOut, ctx.Err()
 		}
 	}
-	return lastOut, lastErr
+}
+
+type retryCap interface {
+	MaxExtraRetries() int
+}
+
+func maxExtraRetries(defaultRetries int, err error) int {
+	if defaultRetries < 0 {
+		defaultRetries = 0
+	}
+	var capErr retryCap
+	if errors.As(err, &capErr) {
+		limited := capErr.MaxExtraRetries()
+		if limited < 0 {
+			limited = 0
+		}
+		if limited < defaultRetries {
+			return limited
+		}
+	}
+	return defaultRetries
 }
 
 func isTransient(err error) bool {
@@ -234,6 +252,10 @@ func isTransient(err error) bool {
 	}
 	var te *core.TransientError
 	if errors.As(err, &te) {
+		return true
+	}
+	var lte *core.LimitedTransientError
+	if errors.As(err, &lte) {
 		return true
 	}
 	if errors.Is(err, context.DeadlineExceeded) {

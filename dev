@@ -4,16 +4,22 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "${ROOT_DIR}"
 
+LOCAL_COMPOSE_FILE="docker-compose.local.yml"
+LOCAL_ALIAS_MAP_FILE="test/fixtures/alias-map.json"
+LOCAL_MOCK_ROOT=".local/mock-foundry"
+LOCAL_INPUT_DIR="${LOCAL_MOCK_ROOT}/inputs"
+LOCAL_UPLOAD_DIR="${LOCAL_MOCK_ROOT}/uploads"
+
 usage() {
   cat <<'USAGE'
 dev: local developer entrypoint
 
 Usage:
   ./dev verify
-  ./dev test [--scope unit|integration|e2e] [-- <go test args...>]
+  ./dev test [venom args...]
   ./dev run local -- <enricher local args...>
-  ./dev run foundry-emulated
-  ./dev run foundry-mock
+  ./dev run foundry-emulated [--watch]
+  ./dev clean
   ./dev e2e
   ./dev doctor [--json]
 USAGE
@@ -33,6 +39,142 @@ json_escape() {
   s="${s//$'\n'/\\n}"
   s="${s//$'\r'/}"
   printf '%s' "${s}"
+}
+
+extract_alias_rid() {
+  local alias_name="$1"
+  local alias_map="$2"
+  sed -n "/\"${alias_name}\"[[:space:]]*:[[:space:]]*{/,/}/p" "${alias_map}" \
+    | sed -n 's/.*"rid"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
+    | head -n 1
+}
+
+check_writable_dir() {
+  local dir="$1"
+  local probe="${dir}/.write-probe.$$"
+  if [[ ! -d "${dir}" ]]; then
+    return 1
+  fi
+  if touch "${probe}" >/dev/null 2>&1; then
+    rm -f "${probe}"
+    return 0
+  fi
+  return 1
+}
+
+permission_fix_command() {
+  printf 'docker run --rm -v "%s/.local:/work" alpine:3 sh -c "chown -R %s:%s /work"' "${ROOT_DIR}" "$(id -u)" "$(id -g)"
+}
+
+preflight_foundry_emulated() {
+  local failed=0
+  local non_permission_failed=0
+  local permission_issue=0
+  local needs_permission_fix=0
+  local input_rid=""
+  local input_fixture=""
+
+  echo "preflight: foundry-emulated"
+
+  if require_cmd docker >/dev/null 2>&1; then
+    echo "ok: docker available"
+  else
+    echo "fail: docker is required"
+    failed=1
+    non_permission_failed=1
+  fi
+
+  if [[ -f "${LOCAL_COMPOSE_FILE}" ]]; then
+    echo "ok: ${LOCAL_COMPOSE_FILE} present"
+  else
+    echo "fail: missing ${LOCAL_COMPOSE_FILE}"
+    failed=1
+    non_permission_failed=1
+  fi
+
+  if [[ -f "${LOCAL_ALIAS_MAP_FILE}" ]]; then
+    echo "ok: ${LOCAL_ALIAS_MAP_FILE} present"
+  else
+    echo "fail: missing ${LOCAL_ALIAS_MAP_FILE}"
+    failed=1
+    non_permission_failed=1
+  fi
+
+  if mkdir -p "${LOCAL_INPUT_DIR}" "${LOCAL_UPLOAD_DIR}" >/dev/null 2>&1; then
+    echo "ok: local harness directories ready"
+  else
+    echo "fail: could not create ${LOCAL_INPUT_DIR} and ${LOCAL_UPLOAD_DIR}"
+    permission_issue=1
+    needs_permission_fix=1
+  fi
+
+  if [[ -f "${LOCAL_ALIAS_MAP_FILE}" ]]; then
+    input_rid="$(extract_alias_rid "input" "${LOCAL_ALIAS_MAP_FILE}")"
+    if [[ -z "${input_rid}" ]]; then
+      echo "fail: could not parse input RID from ${LOCAL_ALIAS_MAP_FILE}"
+      failed=1
+      non_permission_failed=1
+    else
+      input_fixture="${LOCAL_INPUT_DIR}/${input_rid}.csv"
+      if [[ -f "${input_fixture}" ]]; then
+        echo "ok: input fixture present (${input_fixture})"
+      else
+        echo "fail: missing input fixture (${input_fixture})"
+        failed=1
+        non_permission_failed=1
+      fi
+    fi
+  fi
+
+  if check_writable_dir "${LOCAL_INPUT_DIR}"; then
+    echo "ok: writable ${LOCAL_INPUT_DIR}"
+  else
+    echo "fail: not writable ${LOCAL_INPUT_DIR}"
+    needs_permission_fix=1
+    permission_issue=1
+  fi
+
+  if check_writable_dir "${LOCAL_UPLOAD_DIR}"; then
+    echo "ok: writable ${LOCAL_UPLOAD_DIR}"
+  else
+    echo "fail: not writable ${LOCAL_UPLOAD_DIR}"
+    needs_permission_fix=1
+    permission_issue=1
+  fi
+
+  if [[ "${needs_permission_fix}" -eq 1 && "${non_permission_failed}" -eq 0 ]]; then
+    echo "info: attempting permission auto-fix for ${LOCAL_MOCK_ROOT}"
+    if docker run --rm -v "${ROOT_DIR}/.local:/work" alpine:3 sh -c "chown -R $(id -u):$(id -g) /work" >/dev/null 2>&1; then
+      echo "ok: permission auto-fix completed"
+    else
+      echo "fail: permission auto-fix command failed"
+      failed=1
+    fi
+
+    if check_writable_dir "${LOCAL_INPUT_DIR}"; then
+      echo "ok: writable ${LOCAL_INPUT_DIR} after auto-fix"
+    else
+      echo "fail: still not writable ${LOCAL_INPUT_DIR}"
+      failed=1
+    fi
+
+    if check_writable_dir "${LOCAL_UPLOAD_DIR}"; then
+      echo "ok: writable ${LOCAL_UPLOAD_DIR} after auto-fix"
+    else
+      echo "fail: still not writable ${LOCAL_UPLOAD_DIR}"
+      failed=1
+    fi
+  fi
+
+  if [[ "${failed}" -ne 0 ]]; then
+    echo "preflight: failed"
+    if [[ "${permission_issue}" -eq 1 ]]; then
+      echo "remediation: $(permission_fix_command)"
+    fi
+    return 1
+  fi
+
+  echo "preflight: passed"
 }
 
 doctor_text() {
@@ -118,48 +260,181 @@ doctor_json() {
   fi
 }
 
-run_test() {
-  local scope="unit"
-  local extra=()
+require_gemini_env() {
+  load_gemini_env_from_dotenv
 
-  while [[ $# -gt 0 ]]; do
-    case "$1" in
-      --scope)
-        scope="$2"
-        shift 2
-        ;;
-      --)
-        shift
-        extra=("$@")
-        break
-        ;;
-      *)
-        echo "unknown test arg: $1" >&2
-        usage
-        return 2
-        ;;
-    esac
+  if [[ -z "${GEMINI_MODEL:-}" ]]; then
+    export GEMINI_MODEL="gemini-2.5-flash"
+  fi
+
+  local missing=0
+  if [[ -z "${GEMINI_API_KEY:-}" ]]; then
+    echo "missing env: GEMINI_API_KEY" >&2
+    missing=1
+  fi
+  if [[ "${missing}" -ne 0 ]]; then
+    return 1
+  fi
+}
+
+dotenv_lookup() {
+  local key="$1"
+  local dotenv_path="${ROOT_DIR}/.env"
+  [[ -f "${dotenv_path}" ]] || return 1
+  (
+    set -a
+    set +u
+    # shellcheck disable=SC1090
+    source "${dotenv_path}"
+    eval "printf '%s' \"\${${key}:-}\""
+  )
+}
+
+load_gemini_env_from_dotenv() {
+  local val=""
+  if [[ -z "${GEMINI_API_KEY:-}" ]]; then
+    if val="$(dotenv_lookup GEMINI_API_KEY)" && [[ -n "${val}" ]]; then
+      export GEMINI_API_KEY="${val}"
+    fi
+  fi
+  if [[ -z "${GEMINI_MODEL:-}" ]]; then
+    if val="$(dotenv_lookup GEMINI_MODEL)" && [[ -n "${val}" ]]; then
+      export GEMINI_MODEL="${val}"
+    fi
+  fi
+}
+
+run_e2e() {
+  require_gemini_env
+  mkdir -p out/venom
+  (
+    cd out/venom
+    exec "${ROOT_DIR}/test/scripts/venom.sh" run "${ROOT_DIR}/test/venom/enricher_e2e.yml" --output-dir . --format=xml --html-report "$@"
+  )
+}
+
+output_rid_from_alias_map() {
+  extract_alias_rid "output" "${LOCAL_ALIAS_MAP_FILE}"
+}
+
+committed_output_csv_path() {
+  local output_rid="$1"
+  printf '%s/%s/_committed/readTable.csv' "${LOCAL_UPLOAD_DIR}" "${output_rid}"
+}
+
+file_signature() {
+  local path="$1"
+  if [[ ! -f "${path}" ]]; then
+    printf 'missing'
+    return
+  fi
+  cksum "${path}" | awk '{print $1 ":" $2}'
+}
+
+validate_committed_output() {
+  local output_rid="$1"
+  local committed_csv
+  committed_csv="$(committed_output_csv_path "${output_rid}")"
+
+  if [[ ! -f "${committed_csv}" ]]; then
+    echo "fail: missing committed output (${committed_csv})" >&2
+    return 1
+  fi
+  if tail -n +2 "${committed_csv}" | grep -q ',error,'; then
+    echo "fail: committed output has error rows (${committed_csv})" >&2
+    tail -n +1 "${committed_csv}" >&2
+    return 1
+  fi
+  if ! tail -n +2 "${committed_csv}" | grep -q ',ok,'; then
+    echo "fail: committed output has no successful rows (${committed_csv})" >&2
+    tail -n +1 "${committed_csv}" >&2
+    return 1
+  fi
+  echo "ok: committed output has successful rows and no errors (${committed_csv})"
+}
+
+run_foundry_emulated_watch() {
+  local input_rid=""
+  local output_rid=""
+  local input_fixture=""
+  local previous_sig=""
+  local current_sig=""
+
+  preflight_foundry_emulated
+  require_gemini_env
+
+  input_rid="$(extract_alias_rid "input" "${LOCAL_ALIAS_MAP_FILE}")"
+  output_rid="$(output_rid_from_alias_map)"
+  if [[ -z "${input_rid}" || -z "${output_rid}" ]]; then
+    echo "fail: could not parse input/output RID from ${LOCAL_ALIAS_MAP_FILE}" >&2
+    return 1
+  fi
+  input_fixture="${LOCAL_INPUT_DIR}/${input_rid}.csv"
+  if [[ ! -f "${input_fixture}" ]]; then
+    echo "fail: missing input fixture (${input_fixture})" >&2
+    return 1
+  fi
+
+  echo "watch: starting mock-foundry service"
+  LOCAL_UID="$(id -u)" LOCAL_GID="$(id -g)" docker compose -f "${LOCAL_COMPOSE_FILE}" up -d --build mock-foundry
+  trap 'LOCAL_UID="$(id -u)" LOCAL_GID="$(id -g)" docker compose -f "${LOCAL_COMPOSE_FILE}" down --remove-orphans >/dev/null 2>&1 || true' EXIT INT TERM
+
+  echo "watch: running initial enrichment"
+  LOCAL_UID="$(id -u)" LOCAL_GID="$(id -g)" docker compose -f "${LOCAL_COMPOSE_FILE}" run --rm enricher
+  validate_committed_output "${output_rid}" || true
+  previous_sig="$(file_signature "${input_fixture}")"
+
+  echo "watch: monitoring ${input_fixture} (poll interval: 2s)"
+  echo "watch: edit the CSV to trigger reruns; press Ctrl+C to stop"
+  while true; do
+    sleep 2
+    current_sig="$(file_signature "${input_fixture}")"
+    if [[ "${current_sig}" != "${previous_sig}" ]]; then
+      echo "watch: input changed; running enrichment"
+      previous_sig="${current_sig}"
+      if ! LOCAL_UID="$(id -u)" LOCAL_GID="$(id -g)" docker compose -f "${LOCAL_COMPOSE_FILE}" run --rm enricher; then
+        echo "fail: enricher container run failed; continuing to watch" >&2
+        continue
+      fi
+      validate_committed_output "${output_rid}" || true
+    fi
   done
-
-  case "${scope}" in
-    unit)
-      go test ./... "${extra[@]}"
-      ;;
-    integration)
-      go test ./internal/app ./pkg/mockfoundry ./examples/email_enricher/pipeline ./pkg/pipeline/io/foundry "${extra[@]}"
-      ;;
-    e2e)
-      go test -tags=gemini_e2e ./... "${extra[@]}"
-      ;;
-    *)
-      echo "invalid scope: ${scope}" >&2
-      return 2
-      ;;
-  esac
 }
 
 run_foundry_emulated() {
-  docker compose -f docker-compose.local.yml up --abort-on-container-exit --build
+  if [[ "${1:-}" == "--watch" ]]; then
+    shift
+    if [[ $# -gt 0 ]]; then
+      echo "unknown arg for foundry-emulated --watch: $1" >&2
+      return 2
+    fi
+    run_foundry_emulated_watch
+    return
+  fi
+  if [[ $# -gt 0 ]]; then
+    echo "unknown arg for foundry-emulated: $1" >&2
+    return 2
+  fi
+
+  preflight_foundry_emulated
+  require_gemini_env
+  LOCAL_UID="$(id -u)" LOCAL_GID="$(id -g)" docker compose -f "${LOCAL_COMPOSE_FILE}" up --abort-on-container-exit --build
+}
+
+clean_local_harness() {
+  if ! require_cmd docker >/dev/null 2>&1; then
+    echo "missing command: docker" >&2
+    return 1
+  fi
+  if [[ ! -f "${LOCAL_COMPOSE_FILE}" ]]; then
+    echo "missing ${LOCAL_COMPOSE_FILE}" >&2
+    return 1
+  fi
+
+  docker compose -f "${LOCAL_COMPOSE_FILE}" down -v --remove-orphans
+  mkdir -p "${LOCAL_INPUT_DIR}" "${LOCAL_UPLOAD_DIR}"
+  find "${LOCAL_UPLOAD_DIR}" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+  echo "clean: reset compose resources and cleared ${LOCAL_UPLOAD_DIR}"
 }
 
 main() {
@@ -172,11 +447,12 @@ main() {
     verify)
       shift
       ./godelw verify --apply=false "$@"
-      exec ./test/scripts/verify_public_modules.sh
+      ./test/scripts/verify_public_modules.sh
+      exec ./test/scripts/dev_cli_test.sh
       ;;
     test)
       shift
-      run_test "$@"
+      run_e2e "$@"
       ;;
     run)
       shift
@@ -189,7 +465,7 @@ main() {
           shift
           exec go run ./cmd/enricher local "$@"
           ;;
-        foundry-emulated|foundry-mock)
+        foundry-emulated)
           shift
           run_foundry_emulated "$@"
           ;;
@@ -201,7 +477,11 @@ main() {
       ;;
     e2e)
       shift
-      exec ./test/scripts/venom.sh run test/venom/enricher_e2e.yml "$@"
+      run_e2e "$@"
+      ;;
+    clean)
+      shift
+      clean_local_harness "$@"
       ;;
     doctor)
       shift

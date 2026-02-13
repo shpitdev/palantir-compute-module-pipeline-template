@@ -35,6 +35,9 @@ jobs:
       - name: Verify public package consumers
         run: bash ./test/scripts/verify_public_modules.sh
 
+      - name: Verify dev CLI behavior
+        run: bash ./test/scripts/dev_cli_test.sh
+
       - name: Build linux/amd64 binary
         run: |
           mkdir -p out
@@ -135,7 +138,8 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p out/venom
-          venom run test/venom/enricher_e2e.yml --output-dir out/venom --format=xml --html-report -v
+          cd out/venom
+          venom run ../../test/venom/enricher_e2e.yml --output-dir . --format=xml --html-report -v
 
       - name: Docker Compose Down (Always)
         if: ${{ always() && steps.gemini_secrets.outputs.enabled == 'true' }}

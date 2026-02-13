@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-cd "$(dirname "$0")/../.."
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 
 VENOM_VERSION="${VENOM_VERSION:-v1.3.0}"
-OUT_BIN_DIR="${OUT_BIN_DIR:-out/bin}"
+OUT_BIN_DIR="${OUT_BIN_DIR:-${ROOT_DIR}/out/bin}"
 VENOM_BIN="${VENOM_BIN:-${OUT_BIN_DIR}/venom}"
 
 mkdir -p "${OUT_BIN_DIR}"
@@ -34,4 +35,3 @@ if [[ ! -x "${VENOM_BIN}" ]]; then
 fi
 
 exec "${VENOM_BIN}" "$@"
-

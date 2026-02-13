@@ -81,10 +81,11 @@ Primary commands:
 | Task | Command |
 | --- | --- |
 | Verify (CI parity + public consumer checks) | `./dev verify` |
-| Unit tests | `./dev test --scope unit` |
-| Integration tests | `./dev test --scope integration` |
-| Gemini E2E tests | `./dev test --scope e2e` |
+| Real Gemini + compose E2E | `./dev test` |
 | Doctor diagnostics | `./dev doctor` |
+| Local emulated flow (canonical) | `./dev run foundry-emulated` |
+| Local emulated flow with auto-rerun loop | `./dev run foundry-emulated --watch` |
+| Reset local emulated harness outputs | `./dev clean` |
 
 Underlying godel tasks remain available (`./godelw format|lint|test|verify|license`).
 
