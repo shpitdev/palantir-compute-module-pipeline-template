@@ -44,8 +44,14 @@ jobs:
             image_ref="${FOUNDRY_REGISTRY_HOST}/${FOUNDRY_DOCKER_IMAGE_NAME}"
           fi
 
-          sha_tag="sha-${GITHUB_SHA}"
+          short_sha="${GITHUB_SHA::12}"
+          sha_tag="sha-${short_sha}"
           tags="${image_ref}:${sha_tag}"
+
+          if [[ "${GITHUB_REF_TYPE}" == "branch" && "${GITHUB_REF_NAME}" == "main" ]]; then
+            # Keep a human-friendly moving tag for "latest main" selection.
+            tags+=$'\n'"${image_ref}:main"
+          fi
 
           if [[ "${GITHUB_REF_TYPE}" == "tag" && "${GITHUB_REF_NAME}" == v* ]]; then
             tags+=$'\n'"${image_ref}:${GITHUB_REF_NAME}"

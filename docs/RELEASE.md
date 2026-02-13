@@ -122,8 +122,8 @@ This repo publishes compute-module images to Foundry via `.github/workflows/publ
 
 ### Tagging Behavior
 
-- On `main` pushes: publish `sha-<gitsha>`.
-- On release tags `v*`: publish both `sha-<gitsha>` and `<tag>`.
+- On `main` pushes: publish `sha-<short-gitsha>` and moving tag `main`.
+- On release tags `v*`: publish both `sha-<short-gitsha>` and `<tag>`.
 - On pull requests: build only (no push) to validate Docker buildability.
 
 ### Permissions
