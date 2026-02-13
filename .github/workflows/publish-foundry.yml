@@ -11,8 +11,6 @@ on:
       - "internal/**"
       - "pkg/**"
   push:
-    branches:
-      - main
     tags:
       - "v*"
   workflow_dispatch:
@@ -21,13 +19,13 @@ permissions:
   contents: read
 
 jobs:
-  publish:
+  resolve-tags:
+    name: Resolve tags
     runs-on: ubuntu-latest
+    outputs:
+      image_ref: ${{ steps.meta.outputs.image_ref }}
+      tags: ${{ steps.meta.outputs.tags }}
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: docker/setup-buildx-action@v3
-
       - name: Resolve tags
         id: meta
         env:
@@ -44,29 +42,35 @@ jobs:
             image_ref="${FOUNDRY_REGISTRY_HOST}/${FOUNDRY_DOCKER_IMAGE_NAME}"
           fi
 
+          short_sha="${GITHUB_SHA::12}"
           tags=""
 
-          if [[ "${GITHUB_REF_TYPE}" == "branch" && "${GITHUB_REF_NAME}" == "main" ]]; then
-            # Keep a human-friendly moving tag for "latest main" selection.
-            tags+="${image_ref}:main"
-          fi
-
-          if [[ "${GITHUB_REF_TYPE}" == "tag" && "${GITHUB_REF_NAME}" == v* ]]; then
+          if [[ "${GITHUB_EVENT_NAME}" == "pull_request" ]]; then
+            tags="${image_ref}:pr-${short_sha}"
+          elif [[ "${GITHUB_REF_TYPE}" == "tag" && "${GITHUB_REF_NAME}" == v* ]]; then
             release_tag="${GITHUB_REF_NAME#v}"
-            if [[ -n "${tags}" ]]; then
-              tags+=$'\n'"${image_ref}:${release_tag}"
-            else
-              tags="${image_ref}:${release_tag}"
-            fi
+            tags="${image_ref}:${release_tag}"
+          elif [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            tags="${image_ref}:manual-${short_sha}"
           fi
 
           {
             echo "image_ref=${image_ref}"
-            echo "sha_tag="
             echo "tags<<EOF"
             echo "${tags}"
             echo "EOF"
           } >> "${GITHUB_OUTPUT}"
+
+  publish:
+    name: Build and push image
+    needs: [resolve-tags]
+    runs-on: ubuntu-latest
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
 
       - name: Login to Foundry registry
         if: github.event_name != 'pull_request'
@@ -89,10 +93,16 @@ jobs:
           file: Dockerfile
           platforms: linux/amd64
           push: ${{ github.event_name != 'pull_request' }}
-          tags: ${{ steps.meta.outputs.tags }}
+          tags: ${{ needs.resolve-tags.outputs.tags }}
           provenance: false
           sbom: false
 
+  summarize:
+    name: Workflow summary
+    needs: [resolve-tags, publish]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
       - name: Workflow summary
         run: |
           set -euo pipefail
@@ -100,16 +110,16 @@ jobs:
             echo "## Foundry Docker Publish"
             echo ""
             echo "- Event: \`${GITHUB_EVENT_NAME}\`"
-            echo "- Image: \`${{ steps.meta.outputs.image_ref }}\`"
+            echo "- Image: \`${{ needs.resolve-tags.outputs.image_ref }}\`"
             echo "- Tags:"
             while IFS= read -r tag; do
               [[ -z "${tag}" ]] && continue
               echo "  - \`${tag}\`"
             done <<'EOF'
-          ${{ steps.meta.outputs.tags }}
+          ${{ needs.resolve-tags.outputs.tags }}
           EOF
             if [[ "${GITHUB_EVENT_NAME}" != "pull_request" ]]; then
-              echo "- Digest: \`${{ steps.build.outputs.digest }}\`"
+              echo "- Digest: \`${{ needs.publish.outputs.digest }}\`"
             else
               echo "- Publish: skipped on pull requests"
             fi
