@@ -3,7 +3,9 @@ package worker_test
 import (
 	"context"
 	"errors"
+	"slices"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -196,5 +198,100 @@ func TestProcessAll_PartialOutputContinues(t *testing.T) {
 	}
 	if out[1].Err != nil || out[1].Output != "ok" {
 		t.Fatalf("unexpected out[1]: %#v", out[1])
+	}
+}
+
+func TestProcessAllWithCallback_CompletesInCompletionOrder(t *testing.T) {
+	t.Parallel()
+
+	releaseSlow := make(chan struct{})
+	startedSlow := make(chan struct{})
+	var firstCallbackInput atomic.Value
+	firstCallbackInput.Store("")
+
+	fn := func(_ context.Context, email string) (string, error) {
+		if email == "slow@example.com" {
+			close(startedSlow)
+			<-releaseSlow
+		}
+		return email, nil
+	}
+
+	var mu sync.Mutex
+	var seen []string
+	doneErr := make(chan error, 1)
+	go func() {
+		_, err := worker.ProcessAllWithCallback(
+			context.Background(),
+			[]string{"slow@example.com", "fast@example.com"},
+			fn,
+			func(res worker.Result[string, string]) error {
+				mu.Lock()
+				defer mu.Unlock()
+				seen = append(seen, res.Input)
+				if len(seen) == 1 {
+					firstCallbackInput.Store(res.Input)
+				}
+				return nil
+			},
+			worker.Options{Workers: 2},
+		)
+		doneErr <- err
+	}()
+
+	select {
+	case <-startedSlow:
+	case <-time.After(1 * time.Second):
+		t.Fatal("timed out waiting for slow task to start")
+	}
+
+	deadline := time.Now().Add(1 * time.Second)
+	for time.Now().Before(deadline) {
+		if firstCallbackInput.Load().(string) == "fast@example.com" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := firstCallbackInput.Load().(string); got != "fast@example.com" {
+		t.Fatalf("expected fast callback first, got %q", got)
+	}
+
+	close(releaseSlow)
+	select {
+	case err := <-doneErr:
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	case <-time.After(1 * time.Second):
+		t.Fatal("timed out waiting for completion")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(seen) != 2 {
+		t.Fatalf("expected 2 callbacks, got %d (%v)", len(seen), seen)
+	}
+	if !slices.Equal(seen, []string{"fast@example.com", "slow@example.com"}) {
+		t.Fatalf("unexpected callback order: %v", seen)
+	}
+}
+
+func TestProcessAllWithCallback_CallbackErrorStopsRun(t *testing.T) {
+	t.Parallel()
+
+	callbackErr := errors.New("callback failed")
+	_, err := worker.ProcessAllWithCallback(
+		context.Background(),
+		[]string{"alice@example.com"},
+		func(_ context.Context, email string) (string, error) {
+			return email, nil
+		},
+		func(worker.Result[string, string]) error {
+			return callbackErr
+		},
+		worker.Options{Workers: 1},
+	)
+	if !errors.Is(err, callbackErr) {
+		t.Fatalf("expected callback error, got %v", err)
 	}
 }

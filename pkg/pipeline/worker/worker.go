@@ -73,16 +73,22 @@ func ProcessAll[In any, Out any](
 	processor func(context.Context, In) (Out, error),
 	opts Options,
 ) ([]Result[In, Out], error) {
+	return ProcessAllWithCallback(ctx, items, processor, nil, opts)
+}
+
+// ProcessAllWithCallback runs the processor over all input items and invokes onResult
+// as each item completes. The callback receives completion-order results.
+func ProcessAllWithCallback[In any, Out any](
+	ctx context.Context,
+	items []In,
+	processor func(context.Context, In) (Out, error),
+	onResult func(Result[In, Out]) error,
+	opts Options,
+) ([]Result[In, Out], error) {
 	opts = opts.withDefaults()
 
-	runCtx := ctx
-	var cancel context.CancelFunc
-	if opts.FailurePolicy == FailurePolicyFailFast {
-		runCtx, cancel = context.WithCancel(ctx)
-	}
-	if cancel != nil {
-		defer cancel()
-	}
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
 
 	var limiter *rate.Limiter
 	if opts.RateLimitRPS > 0 {
@@ -95,7 +101,13 @@ func ProcessAll[In any, Out any](
 		idx int
 		in  In
 	}
+	type completion struct {
+		idx int
+		res Result[In, Out]
+	}
+
 	jobs := make(chan job)
+	done := make(chan completion, opts.Workers)
 
 	var wg sync.WaitGroup
 
@@ -122,7 +134,11 @@ func ProcessAll[In any, Out any](
 				return
 			}
 			res := processOne(runCtx, j.in, processor, limiter, opts)
-			out[j.idx] = res
+			select {
+			case done <- completion{idx: j.idx, res: res}:
+			case <-runCtx.Done():
+				return
+			}
 			if res.Err != nil && opts.FailurePolicy == FailurePolicyFailFast {
 				fail(res.Err)
 				return
@@ -135,23 +151,36 @@ func ProcessAll[In any, Out any](
 		go workerFn()
 	}
 
-	for i, item := range items {
-		select {
-		case jobs <- job{idx: i, in: item}:
-		case <-runCtx.Done():
-			break
+	go func() {
+		defer close(jobs)
+		for i, item := range items {
+			select {
+			case jobs <- job{idx: i, in: item}:
+			case <-runCtx.Done():
+				return
+			}
+		}
+	}()
+
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	for item := range done {
+		out[item.idx] = item.res
+		if onResult != nil {
+			if err := onResult(item.res); err != nil {
+				fail(err)
+			}
 		}
 	}
-	close(jobs)
-	wg.Wait()
 
-	if opts.FailurePolicy == FailurePolicyFailFast {
-		mu.Lock()
-		err := firstErr
-		mu.Unlock()
-		if err != nil {
-			return nil, err
-		}
+	mu.Lock()
+	err := firstErr
+	mu.Unlock()
+	if err != nil {
+		return nil, err
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err

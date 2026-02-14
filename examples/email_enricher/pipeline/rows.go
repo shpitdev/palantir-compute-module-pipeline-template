@@ -57,20 +57,53 @@ func Header() []string {
 //
 // Errors from enrichment are recorded per-row and do not fail the full run.
 func EnrichEmails(ctx context.Context, emails []string, enricher enrich.Enricher, opts Options) ([]Row, error) {
+	workerOpts := workerOptions(opts)
+	processor := emailProcessor(enricher)
+
+	out, err := worker.ProcessAll(ctx, emails, processor, workerOpts)
+	if err != nil {
+		return nil, err
+	}
+
+	rows := make([]Row, 0, len(out))
+	for _, item := range out {
+		rows = append(rows, rowFromWorkerResult(item))
+	}
+	return rows, nil
+}
+
+// EnrichEmailsStream runs enrichment and calls onRow as each item completes.
+//
+// Rows are emitted in completion-order, which may differ from input order.
+func EnrichEmailsStream(
+	ctx context.Context,
+	emails []string,
+	enricher enrich.Enricher,
+	opts Options,
+	onRow func(Row) error,
+) error {
+	workerOpts := workerOptions(opts)
+	processor := emailProcessor(enricher)
+
+	_, err := worker.ProcessAllWithCallback(ctx, emails, processor, func(item worker.Result[string, enrich.Result]) error {
+		if onRow == nil {
+			return nil
+		}
+		return onRow(rowFromWorkerResult(item))
+	}, workerOpts)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func workerOptions(opts Options) worker.Options {
 	policy := worker.FailurePolicyPartialOutput
 	if opts.FailFast {
 		policy = worker.FailurePolicyFailFast
 	}
 
-	processor := func(reqCtx context.Context, raw string) (enrich.Result, error) {
-		email := strings.TrimSpace(raw)
-		if email == "" {
-			return enrich.Result{}, errors.New("empty email")
-		}
-		return enricher.Enrich(reqCtx, email)
-	}
-
-	out, err := worker.ProcessAll(ctx, emails, processor, worker.Options{
+	return worker.Options{
 		Workers:           opts.Workers,
 		MaxRetries:        opts.MaxRetries,
 		RequestTimeout:    opts.RequestTimeout,
@@ -79,43 +112,47 @@ func EnrichEmails(ctx context.Context, emails []string, enricher enrich.Enricher
 		BackoffInitial:    200 * time.Millisecond,
 		BackoffMax:        2 * time.Second,
 		BackoffJitterFrac: 0.2,
-	})
-	if err != nil {
-		return nil, err
 	}
+}
 
-	rows := make([]Row, 0, len(out))
-	for _, item := range out {
-		sources := jsonArrayOrEmpty(item.Output.Sources)
-		queries := jsonArrayOrEmpty(item.Output.WebSearchQueries)
-
-		if item.Err != nil {
-			rows = append(rows, Row{
-				Email:            strings.TrimSpace(item.Input),
-				Status:           "error",
-				Error:            redact.Secrets(item.Err.Error()),
-				Model:            item.Output.Model,
-				Sources:          sources,
-				WebSearchQueries: queries,
-			})
-			continue
+func emailProcessor(enricher enrich.Enricher) func(context.Context, string) (enrich.Result, error) {
+	return func(reqCtx context.Context, raw string) (enrich.Result, error) {
+		email := strings.TrimSpace(raw)
+		if email == "" {
+			return enrich.Result{}, errors.New("empty email")
 		}
+		return enricher.Enrich(reqCtx, email)
+	}
+}
 
-		rows = append(rows, Row{
+func rowFromWorkerResult(item worker.Result[string, enrich.Result]) Row {
+	sources := jsonArrayOrEmpty(item.Output.Sources)
+	queries := jsonArrayOrEmpty(item.Output.WebSearchQueries)
+
+	if item.Err != nil {
+		return Row{
 			Email:            strings.TrimSpace(item.Input),
-			LinkedInURL:      item.Output.LinkedInURL,
-			Company:          item.Output.Company,
-			Title:            item.Output.Title,
-			Description:      item.Output.Description,
-			Confidence:       item.Output.Confidence,
-			Status:           "ok",
-			Error:            "",
+			Status:           "error",
+			Error:            redact.Secrets(item.Err.Error()),
 			Model:            item.Output.Model,
 			Sources:          sources,
 			WebSearchQueries: queries,
-		})
+		}
 	}
-	return rows, nil
+
+	return Row{
+		Email:            strings.TrimSpace(item.Input),
+		LinkedInURL:      item.Output.LinkedInURL,
+		Company:          item.Output.Company,
+		Title:            item.Output.Title,
+		Description:      item.Output.Description,
+		Confidence:       item.Output.Confidence,
+		Status:           "ok",
+		Error:            "",
+		Model:            item.Output.Model,
+		Sources:          sources,
+		WebSearchQueries: queries,
+	}
 }
 
 func jsonArrayOrEmpty(vals []string) string {

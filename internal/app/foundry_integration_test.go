@@ -7,9 +7,11 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/palantir/palantir-compute-module-pipeline-search/examples/email_enricher/enrich"
 	"github.com/palantir/palantir-compute-module-pipeline-search/examples/email_enricher/pipeline"
@@ -418,10 +420,137 @@ func TestRunFoundry_WritesToStreamProxyWhenOutputIsStream(t *testing.T) {
 	if len(recs) != 2 {
 		t.Fatalf("expected 2 stream records, got %d: %#v", len(recs), recs)
 	}
-	if recs[0]["email"] != "alice@example.com" || recs[0]["company"] != "example.com" || recs[0]["status"] != "ok" {
-		t.Fatalf("unexpected record[0]: %#v", recs[0])
+
+	gotEmails := []string{
+		recs[0]["email"].(string),
+		recs[1]["email"].(string),
 	}
-	if recs[1]["email"] != "bob@corp.test" || recs[1]["company"] != "corp.test" || recs[1]["status"] != "ok" {
-		t.Fatalf("unexpected record[1]: %#v", recs[1])
+	slices.Sort(gotEmails)
+	if !slices.Equal(gotEmails, []string{"alice@example.com", "bob@corp.test"}) {
+		t.Fatalf("unexpected stream emails: %v", gotEmails)
+	}
+	for _, rec := range recs {
+		email, _ := rec["email"].(string)
+		status, _ := rec["status"].(string)
+		if status != "ok" {
+			t.Fatalf("expected status ok for %q, got %#v", email, rec)
+		}
+		if email == "alice@example.com" && rec["company"] != "example.com" {
+			t.Fatalf("unexpected alice record: %#v", rec)
+		}
+		if email == "bob@corp.test" && rec["company"] != "corp.test" {
+			t.Fatalf("unexpected bob record: %#v", rec)
+		}
+	}
+}
+
+type blockingStreamEnricher struct {
+	releaseSlow chan struct{}
+	startedSlow chan struct{}
+}
+
+func (e blockingStreamEnricher) Enrich(_ context.Context, email string) (enrich.Result, error) {
+	if strings.EqualFold(strings.TrimSpace(email), "slow@example.com") {
+		close(e.startedSlow)
+		<-e.releaseSlow
+	}
+	domain := ""
+	if at := strings.LastIndex(email, "@"); at >= 0 && at+1 < len(email) {
+		domain = email[at+1:]
+	}
+	return enrich.Result{
+		Company:    domain,
+		Confidence: "test",
+		Model:      "test-model",
+	}, nil
+}
+
+func TestRunFoundry_StreamPublishesBeforeAllRowsFinish(t *testing.T) {
+	t.Parallel()
+
+	inputRID := "ri.foundry.main.dataset.11111111-1111-1111-1111-111111111111"
+	outputRID := "ri.foundry.main.dataset.22222222-2222-2222-2222-222222222222"
+
+	inputDir := t.TempDir()
+	uploadDir := t.TempDir()
+
+	if err := os.WriteFile(
+		filepath.Join(inputDir, inputRID+".csv"),
+		[]byte("email\nslow@example.com\nfast@example.com\n"),
+		0644,
+	); err != nil {
+		t.Fatalf("write input csv: %v", err)
+	}
+
+	mock := mockfoundry.New(inputDir, uploadDir)
+	mock.CreateStream(outputRID)
+	mock.RequireBearerToken("dummy-token")
+	ts := httptest.NewServer(mock.Handler())
+	defer ts.Close()
+
+	env := foundry.Env{
+		Services: foundry.Services{
+			APIGateway:  ts.URL + "/api",
+			StreamProxy: ts.URL + "/stream-proxy/api",
+		},
+		Token: "dummy-token",
+		Aliases: map[string]foundry.DatasetRef{
+			"input":  {RID: inputRID, Branch: "master"},
+			"output": {RID: outputRID, Branch: "master"},
+		},
+	}
+
+	releaseSlow := make(chan struct{})
+	startedSlow := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		done <- app.RunFoundry(
+			context.Background(),
+			env,
+			"input",
+			"output",
+			"enriched.csv",
+			"stream",
+			pipeline.Options{Workers: 2},
+			blockingStreamEnricher{releaseSlow: releaseSlow, startedSlow: startedSlow},
+		)
+	}()
+
+	select {
+	case <-startedSlow:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for slow enrichment to start")
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		recs := mock.StreamRecords(outputRID, "master")
+		if len(recs) >= 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	recs := mock.StreamRecords(outputRID, "master")
+	if len(recs) != 1 {
+		t.Fatalf("expected 1 published record before releasing slow email, got %d (%#v)", len(recs), recs)
+	}
+	if recs[0]["email"] != "fast@example.com" {
+		t.Fatalf("expected fast email to publish first, got %#v", recs[0])
+	}
+
+	close(releaseSlow)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("RunFoundry failed: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for stream run to finish")
+	}
+
+	recs = mock.StreamRecords(outputRID, "master")
+	if len(recs) != 2 {
+		t.Fatalf("expected 2 stream records after completion, got %d (%#v)", len(recs), recs)
 	}
 }

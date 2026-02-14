@@ -132,37 +132,92 @@ func RunFoundry(
 	logf("resolved output mode=%s in %s", mode, time.Since(modeStart).Round(time.Millisecond))
 
 	enrichStart := time.Now()
-	var rows []pipeline.Row
 	if isStream {
 		logf("incremental mode disabled for stream output; append-only streams require explicit checkpointing for dedupe")
-		rows, err = pipeline.EnrichEmails(ctx, emails, newTracedEnricher(enricher, logger, runID, opts), opts)
+		branch := strings.TrimSpace(outputRef.Branch)
+		if branch == "" {
+			branch = "master"
+		}
+		writeStart := time.Now()
+		logf("publishing rows to stream-proxy (%s@%s)", outputRef.RID, branch)
+
+		processedRows := 0
+		publishedRows := 0
+		okRows := 0
+		errorRows := 0
+		err = pipeline.EnrichEmailsStream(ctx, emails, newTracedEnricher(enricher, logger, runID, opts), opts, func(row pipeline.Row) error {
+			processedRows++
+			if strings.EqualFold(strings.TrimSpace(row.Status), "ok") {
+				okRows++
+			} else {
+				errorRows++
+			}
+
+			logf(
+				"stream row enriched: email=%q status=%q completed=%d/%d enrichElapsed=%s",
+				row.Email,
+				strings.TrimSpace(row.Status),
+				processedRows,
+				len(emails),
+				time.Since(enrichStart).Round(time.Millisecond),
+			)
+
+			publishStart := time.Now()
+			if err := foundryio.PublishJSONRecord(ctx, client, outputRef, rowToStreamRecord(row)); err != nil {
+				return err
+			}
+
+			publishedRows++
+			logf(
+				"stream row published: email=%q status=%q publishDuration=%s published=%d/%d",
+				row.Email,
+				strings.TrimSpace(row.Status),
+				time.Since(publishStart).Round(time.Millisecond),
+				publishedRows,
+				len(emails),
+			)
+			return nil
+		})
 		if err != nil {
 			return err
 		}
-	} else {
-		existingByEmail, err := readExistingOutputRows(ctx, client, outputRef, logger, runID)
-		if err != nil {
-			return err
-		}
-		plan := buildIncrementalPlan(emails, existingByEmail)
 		logf(
-			"incremental plan: inputRows=%d cachedRows=%d rowsToEnrich=%d uniqueEmailsToEnrich=%d",
-			len(emails),
-			plan.cachedRows,
-			plan.pendingRows,
-			len(plan.pendingEmails),
+			"enrichment complete: produced=%d ok=%d error=%d duration=%s",
+			processedRows,
+			okRows,
+			errorRows,
+			time.Since(enrichStart).Round(time.Millisecond),
 		)
-		if len(plan.pendingEmails) > 0 {
-			freshRows, err := pipeline.EnrichEmails(ctx, plan.pendingEmails, newTracedEnricher(enricher, logger, runID, opts), opts)
-			if err != nil {
-				return err
-			}
-			if err := plan.applyEnrichedRows(freshRows); err != nil {
-				return err
-			}
-		}
-		rows = plan.rows
+		logf(
+			"foundry run complete: stream publish finished writeDuration=%s totalDuration=%s",
+			time.Since(writeStart).Round(time.Millisecond),
+			time.Since(runStart).Round(time.Millisecond),
+		)
+		return nil
 	}
+
+	existingByEmail, err := readExistingOutputRows(ctx, client, outputRef, logger, runID)
+	if err != nil {
+		return err
+	}
+	plan := buildIncrementalPlan(emails, existingByEmail)
+	logf(
+		"incremental plan: inputRows=%d cachedRows=%d rowsToEnrich=%d uniqueEmailsToEnrich=%d",
+		len(emails),
+		plan.cachedRows,
+		plan.pendingRows,
+		len(plan.pendingEmails),
+	)
+	if len(plan.pendingEmails) > 0 {
+		freshRows, err := pipeline.EnrichEmails(ctx, plan.pendingEmails, newTracedEnricher(enricher, logger, runID, opts), opts)
+		if err != nil {
+			return err
+		}
+		if err := plan.applyEnrichedRows(freshRows); err != nil {
+			return err
+		}
+	}
+	rows := plan.rows
 	okRows, errorRows := countStatuses(rows)
 	logf(
 		"enrichment complete: produced=%d ok=%d error=%d duration=%s",
@@ -171,31 +226,6 @@ func RunFoundry(
 		errorRows,
 		time.Since(enrichStart).Round(time.Millisecond),
 	)
-
-	if isStream {
-		branch := strings.TrimSpace(outputRef.Branch)
-		if branch == "" {
-			branch = "master"
-		}
-		writeStart := time.Now()
-		logf("publishing %d rows to stream-proxy (%s@%s)", len(rows), outputRef.RID, branch)
-		records := make([]map[string]any, 0, len(rows))
-		for i, r := range rows {
-			if i == 0 || (i+1)%100 == 0 || i == len(rows)-1 {
-				logf("stream publish progress: %d/%d", i+1, len(rows))
-			}
-			records = append(records, rowToStreamRecord(r))
-		}
-		if err := foundryio.PublishJSONRecords(ctx, client, outputRef, records); err != nil {
-			return err
-		}
-		logf(
-			"foundry run complete: stream publish finished writeDuration=%s totalDuration=%s",
-			time.Since(writeStart).Round(time.Millisecond),
-			time.Since(runStart).Round(time.Millisecond),
-		)
-		return nil
-	}
 
 	writeStart := time.Now()
 	var outBuf bytes.Buffer

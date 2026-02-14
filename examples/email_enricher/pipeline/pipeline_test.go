@@ -5,8 +5,11 @@ import (
 	"context"
 	"encoding/csv"
 	"errors"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/palantir/palantir-compute-module-pipeline-search/examples/email_enricher/enrich"
 	"github.com/palantir/palantir-compute-module-pipeline-search/examples/email_enricher/pipeline"
@@ -46,6 +49,95 @@ func TestEnrichEmails(t *testing.T) {
 	}
 	if rows[2].Status != "error" || rows[2].Error != "empty email" {
 		t.Fatalf("unexpected row[2]: %#v", rows[2])
+	}
+}
+
+type blockingEnricher struct {
+	releaseSlow chan struct{}
+	startedSlow chan struct{}
+}
+
+func (b blockingEnricher) Enrich(_ context.Context, email string) (enrich.Result, error) {
+	email = strings.TrimSpace(strings.ToLower(email))
+	if email == "slow@example.com" {
+		close(b.startedSlow)
+		<-b.releaseSlow
+	}
+	domain := ""
+	if at := strings.LastIndex(email, "@"); at >= 0 && at+1 < len(email) {
+		domain = email[at+1:]
+	}
+	return enrich.Result{
+		Company:    domain,
+		Confidence: "test",
+		Model:      "test-model",
+	}, nil
+}
+
+func TestEnrichEmailsStream_CompletionOrder(t *testing.T) {
+	releaseSlow := make(chan struct{})
+	startedSlow := make(chan struct{})
+	enricher := blockingEnricher{
+		releaseSlow: releaseSlow,
+		startedSlow: startedSlow,
+	}
+
+	var mu sync.Mutex
+	var seen []string
+	done := make(chan error, 1)
+	go func() {
+		done <- pipeline.EnrichEmailsStream(
+			context.Background(),
+			[]string{"slow@example.com", "fast@example.com"},
+			enricher,
+			pipeline.Options{Workers: 2},
+			func(row pipeline.Row) error {
+				mu.Lock()
+				defer mu.Unlock()
+				seen = append(seen, row.Email)
+				return nil
+			},
+		)
+	}()
+
+	select {
+	case <-startedSlow:
+	case <-time.After(1 * time.Second):
+		t.Fatal("timed out waiting for slow email to start")
+	}
+
+	deadline := time.Now().Add(1 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		gotFast := len(seen) > 0 && seen[0] == "fast@example.com"
+		mu.Unlock()
+		if gotFast {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	mu.Lock()
+	if len(seen) == 0 || seen[0] != "fast@example.com" {
+		t.Fatalf("expected fast email first, got %v", seen)
+	}
+	mu.Unlock()
+
+	close(releaseSlow)
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("unexpected stream error: %v", err)
+		}
+	case <-time.After(1 * time.Second):
+		t.Fatal("timed out waiting for stream enrichment to finish")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if !slices.Equal(seen, []string{"fast@example.com", "slow@example.com"}) {
+		t.Fatalf("unexpected completion order: %v", seen)
 	}
 }
 

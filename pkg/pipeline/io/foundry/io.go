@@ -68,19 +68,24 @@ func ResolveOutputMode(ctx context.Context, client *foundry.Client, outputRef fo
 
 // PublishJSONRecords publishes one JSON object per row to stream-proxy.
 func PublishJSONRecords(ctx context.Context, client *foundry.Client, outputRef foundry.DatasetRef, records []map[string]any) error {
+	for _, rec := range records {
+		if err := PublishJSONRecord(ctx, client, outputRef, rec); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// PublishJSONRecord publishes one JSON object to stream-proxy.
+func PublishJSONRecord(ctx context.Context, client *foundry.Client, outputRef foundry.DatasetRef, record map[string]any) error {
 	branch := strings.TrimSpace(outputRef.Branch)
 	if branch == "" {
 		branch = "master"
 	}
 
-	for _, rec := range records {
-		if err := retryTransient(ctx, 8, 200*time.Millisecond, func() error {
-			return client.PublishStreamJSONRecord(ctx, outputRef.RID, branch, rec)
-		}); err != nil {
-			return err
-		}
-	}
-	return nil
+	return retryTransient(ctx, 8, 200*time.Millisecond, func() error {
+		return client.PublishStreamJSONRecord(ctx, outputRef.RID, branch, record)
+	})
 }
 
 // UploadDatasetCSV uploads CSV bytes to a dataset transaction and commits when appropriate.
