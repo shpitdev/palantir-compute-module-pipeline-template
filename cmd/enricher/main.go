@@ -403,7 +403,7 @@ func loadPipelineOptionsFromEnv() (pipeline.Options, error) {
 	if err != nil {
 		return pipeline.Options{}, err
 	}
-	requestTimeout, err := envDuration("REQUEST_TIMEOUT", 30*time.Second)
+	requestTimeout, err := envDuration("REQUEST_TIMEOUT", 2*time.Minute)
 	if err != nil {
 		return pipeline.Options{}, err
 	}

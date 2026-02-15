@@ -52,7 +52,7 @@ func (o Options) withDefaults() Options {
 		o.MaxRetries = 0
 	}
 	if o.RequestTimeout <= 0 {
-		o.RequestTimeout = 30 * time.Second
+		o.RequestTimeout = 2 * time.Minute
 	}
 	if o.BackoffInitial <= 0 {
 		o.BackoffInitial = 200 * time.Millisecond
