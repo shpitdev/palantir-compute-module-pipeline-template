@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/csv"
+	"encoding/json"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -172,6 +174,181 @@ func TestRunFoundry_EndToEndAgainstMock(t *testing.T) {
 	}
 	if calls[9].Path != "/api/v2/datasets/"+outputRID+"/readTable" {
 		t.Fatalf("call[9] path: want %q, got %q (all calls=%#v)", "/api/v2/datasets/"+outputRID+"/readTable", calls[9].Path, calls)
+	}
+}
+
+func TestRunFoundry_StreamMode_ContinuesWhenPriorOutputReadForbidden(t *testing.T) {
+	t.Parallel()
+
+	inputRID := "ri.foundry.main.dataset.11111111-1111-1111-1111-111111111111"
+	outputRID := "ri.foundry.main.dataset.22222222-2222-2222-2222-222222222222"
+
+	inputDir := t.TempDir()
+	uploadDir := t.TempDir()
+
+	if err := os.WriteFile(
+		filepath.Join(inputDir, inputRID+".csv"),
+		[]byte("email\nalice@example.com\nbob@corp.test\n"),
+		0644,
+	); err != nil {
+		t.Fatalf("write input csv: %v", err)
+	}
+
+	mock := mockfoundry.New(inputDir, uploadDir)
+	mock.RequireBearerToken("dummy-token")
+	mock.CreateStream(outputRID)
+
+	base := mock.Handler()
+	wrapped := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Simulate an output stream where the publisher can write via stream-proxy
+		// but cannot read the backing dataset via readTable.
+		if r.Method == http.MethodGet && r.URL.Path == "/api/v2/datasets/"+outputRID+"/readTable" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusForbidden)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"errorCode":       "PERMISSION_DENIED",
+				"errorName":       "ReadTableDatasetPermissionDenied",
+				"errorInstanceId": "00000000-0000-0000-0000-000000000000",
+			})
+			return
+		}
+		base.ServeHTTP(w, r)
+	})
+
+	ts := httptest.NewServer(wrapped)
+	defer ts.Close()
+
+	env := foundry.Env{
+		Services: foundry.Services{
+			APIGateway:  ts.URL + "/api",
+			StreamProxy: ts.URL + "/stream-proxy/api",
+		},
+		Token: "dummy-token",
+		Aliases: map[string]foundry.DatasetRef{
+			"input":  {RID: inputRID, Branch: "master"},
+			"output": {RID: outputRID, Branch: "master"},
+		},
+	}
+
+	if err := app.RunFoundry(context.Background(), env, "input", "output", "", "auto", pipeline.Options{}, testEnricher{}); err != nil {
+		t.Fatalf("RunFoundry failed: %v", err)
+	}
+
+	recs := mock.StreamRecords(outputRID, "master")
+	if len(recs) != 2 {
+		t.Fatalf("expected 2 published stream records, got %d: %#v", len(recs), recs)
+	}
+
+	byEmail := map[string]map[string]any{}
+	for _, r := range recs {
+		email, _ := r["email"].(string)
+		byEmail[email] = r
+	}
+	if _, ok := byEmail["alice@example.com"]; !ok {
+		t.Fatalf("missing alice record: %#v", byEmail)
+	}
+	if _, ok := byEmail["bob@corp.test"]; !ok {
+		t.Fatalf("missing bob record: %#v", byEmail)
+	}
+	if byEmail["alice@example.com"]["company"] != "example.com" {
+		t.Fatalf("alice record company: want %q got %#v", "example.com", byEmail["alice@example.com"]["company"])
+	}
+	if byEmail["bob@corp.test"]["company"] != "corp.test" {
+		t.Fatalf("bob record company: want %q got %#v", "corp.test", byEmail["bob@corp.test"]["company"])
+	}
+	if _, ok := byEmail["alice@example.com"]["run_id"]; !ok {
+		t.Fatalf("alice record missing run_id: %#v", byEmail["alice@example.com"])
+	}
+	if _, ok := byEmail["alice@example.com"]["written_at"]; !ok {
+		t.Fatalf("alice record missing written_at: %#v", byEmail["alice@example.com"])
+	}
+}
+
+func TestRunFoundry_StreamMode_UsesStreamCacheWhenDatasetReadForbidden(t *testing.T) {
+	t.Parallel()
+
+	inputRID := "ri.foundry.main.dataset.11111111-1111-1111-1111-111111111111"
+	outputRID := "ri.foundry.main.dataset.22222222-2222-2222-2222-222222222222"
+
+	inputDir := t.TempDir()
+	uploadDir := t.TempDir()
+
+	if err := os.WriteFile(
+		filepath.Join(inputDir, inputRID+".csv"),
+		[]byte("email\nalice@example.com\nbob@corp.test\n"),
+		0644,
+	); err != nil {
+		t.Fatalf("write input csv: %v", err)
+	}
+
+	mock := mockfoundry.New(inputDir, uploadDir)
+	mock.RequireBearerToken("dummy-token")
+	mock.CreateStream(outputRID)
+
+	base := mock.Handler()
+	wrapped := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Publishing and reading via stream-proxy is allowed; readTable on the backing dataset is forbidden.
+		if r.Method == http.MethodGet && r.URL.Path == "/api/v2/datasets/"+outputRID+"/readTable" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusForbidden)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"errorCode":       "PERMISSION_DENIED",
+				"errorName":       "ReadTableDatasetPermissionDenied",
+				"errorInstanceId": "00000000-0000-0000-0000-000000000000",
+			})
+			return
+		}
+		base.ServeHTTP(w, r)
+	})
+
+	ts := httptest.NewServer(wrapped)
+	defer ts.Close()
+
+	env := foundry.Env{
+		Services: foundry.Services{
+			APIGateway:  ts.URL + "/api",
+			StreamProxy: ts.URL + "/stream-proxy/api",
+		},
+		Token: "dummy-token",
+		Aliases: map[string]foundry.DatasetRef{
+			"input":  {RID: inputRID, Branch: "master"},
+			"output": {RID: outputRID, Branch: "master"},
+		},
+	}
+
+	// Seed the stream with an OK row for alice so incremental can skip re-enrichment.
+	client, err := foundry.NewClient(env.Services.APIGateway, env.Services.StreamProxy, env.Token, env.DefaultCAPath)
+	if err != nil {
+		t.Fatalf("new foundry client: %v", err)
+	}
+	if err := client.PublishStreamJSONRecord(context.Background(), outputRID, "master", map[string]any{
+		"email":      "alice@example.com",
+		"company":    "example.com",
+		"confidence": "seed",
+		"status":     "ok",
+	}); err != nil {
+		t.Fatalf("seed stream record: %v", err)
+	}
+
+	if err := app.RunFoundry(context.Background(), env, "input", "output", "", "auto", pipeline.Options{}, testEnricher{}); err != nil {
+		t.Fatalf("RunFoundry failed: %v", err)
+	}
+
+	recs := mock.StreamRecords(outputRID, "master")
+	if len(recs) != 2 {
+		t.Fatalf("expected 2 total records (seed + bob), got %d: %#v", len(recs), recs)
+	}
+
+	countByEmail := map[string]int{}
+	for _, r := range recs {
+		email, _ := r["email"].(string)
+		countByEmail[email]++
+	}
+	if countByEmail["alice@example.com"] != 1 {
+		t.Fatalf("alice republished unexpectedly: %#v", countByEmail)
+	}
+	if countByEmail["bob@corp.test"] != 1 {
+		t.Fatalf("bob not published exactly once: %#v", countByEmail)
 	}
 }
 
@@ -467,8 +644,8 @@ func TestRunFoundry_WritesToStreamProxyWhenOutputIsStream(t *testing.T) {
 	}
 
 	calls := mock.Calls()
-	if len(calls) != 7 {
-		t.Fatalf("expected 7 calls, got %d: %#v", len(calls), calls)
+	if len(calls) != 6 {
+		t.Fatalf("expected 6 calls, got %d: %#v", len(calls), calls)
 	}
 	if calls[0].Method != "GET" || calls[0].Path != "/api/v2/datasets/"+inputRID+"/branches/master" {
 		t.Fatalf("call[0] mismatch: %#v (all calls=%#v)", calls[0], calls)
@@ -480,18 +657,16 @@ func TestRunFoundry_WritesToStreamProxyWhenOutputIsStream(t *testing.T) {
 	if calls[2].Method != "GET" || calls[2].Path != wantProbePath {
 		t.Fatalf("call[2] mismatch: %#v (all calls=%#v)", calls[2], calls)
 	}
-	if calls[3].Method != "GET" || calls[3].Path != "/api/v2/datasets/"+outputRID+"/branches/master" {
+	// Stream mode reads incremental cache from stream-proxy records.
+	if calls[3].Method != "GET" || calls[3].Path != wantProbePath {
 		t.Fatalf("call[3] mismatch: %#v (all calls=%#v)", calls[3], calls)
 	}
-	if calls[4].Method != "GET" || calls[4].Path != "/api/v2/datasets/"+outputRID+"/readTable" {
+	wantPublishPath := "/stream-proxy/api/streams/" + outputRID + "/branches/master/jsonRecord"
+	if calls[4].Method != "POST" || calls[4].Path != wantPublishPath {
 		t.Fatalf("call[4] mismatch: %#v (all calls=%#v)", calls[4], calls)
 	}
-	wantPublishPath := "/stream-proxy/api/streams/" + outputRID + "/branches/master/jsonRecord"
 	if calls[5].Method != "POST" || calls[5].Path != wantPublishPath {
 		t.Fatalf("call[5] mismatch: %#v (all calls=%#v)", calls[5], calls)
-	}
-	if calls[6].Method != "POST" || calls[6].Path != wantPublishPath {
-		t.Fatalf("call[6] mismatch: %#v (all calls=%#v)", calls[6], calls)
 	}
 
 	recs := mock.StreamRecords(outputRID, "master")

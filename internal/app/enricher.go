@@ -133,7 +133,7 @@ func RunFoundry(
 
 	enrichStart := time.Now()
 	if isStream {
-		existingByEmail, err := readExistingOutputRows(ctx, client, outputRef, logger, runID)
+		existingByEmail, err := readExistingStreamRows(ctx, client, outputRef, logger, runID)
 		if err != nil {
 			return err
 		}
@@ -263,6 +263,82 @@ func RunFoundry(
 		time.Since(runStart).Round(time.Millisecond),
 	)
 	return nil
+}
+
+func readExistingStreamRows(
+	ctx context.Context,
+	client *foundry.Client,
+	outputRef foundry.DatasetRef,
+	logger *log.Logger,
+	runID string,
+) (map[string]pipeline.Row, error) {
+	branch := strings.TrimSpace(outputRef.Branch)
+	if branch == "" {
+		branch = "master"
+	}
+
+	recs, err := client.ReadStreamRecords(ctx, outputRef.RID, branch)
+	if err != nil {
+		if isNotFoundError(err) {
+			logger.Printf("run=%s incremental: no prior stream snapshot found for %s@%s", runID, outputRef.RID, branch)
+			return map[string]pipeline.Row{}, nil
+		}
+		if isPermissionDeniedError(err) {
+			logger.Printf(
+				"run=%s incremental: no permission to read prior stream snapshot for %s@%s; proceeding without cache",
+				runID,
+				outputRef.RID,
+				branch,
+			)
+			return map[string]pipeline.Row{}, nil
+		}
+		return nil, fmt.Errorf("read prior stream snapshot: %w", err)
+	}
+
+	out := make(map[string]pipeline.Row, len(recs))
+	for _, rec := range recs {
+		row := rowFromStreamRecord(rec)
+		key := emailKey(row.Email)
+		if key == "" {
+			continue
+		}
+		prev, ok := out[key]
+		if !ok {
+			out[key] = row
+			continue
+		}
+		out[key] = chooseBestIncrementalRow(prev, row)
+	}
+	logger.Printf("run=%s incremental: loaded %d prior stream rows from %s@%s", runID, len(out), outputRef.RID, branch)
+	return out, nil
+}
+
+func rowFromStreamRecord(rec map[string]any) pipeline.Row {
+	get := func(key string) string {
+		v, ok := rec[key]
+		if !ok || v == nil {
+			return ""
+		}
+		s, ok := v.(string)
+		if !ok {
+			return ""
+		}
+		return s
+	}
+
+	return pipeline.Row{
+		Email:            strings.TrimSpace(get("email")),
+		LinkedInURL:      get("linkedin_url"),
+		Company:          get("company"),
+		Title:            get("title"),
+		Description:      get("description"),
+		Confidence:       get("confidence"),
+		Status:           get("status"),
+		Error:            get("error"),
+		Model:            get("model"),
+		Sources:          get("sources"),
+		WebSearchQueries: get("web_search_queries"),
+	}
 }
 
 func rowToStreamRecord(r pipeline.Row) map[string]any {
@@ -499,6 +575,15 @@ func readExistingOutputRows(
 			logger.Printf("run=%s incremental: no prior output snapshot found for %s@%s", runID, outputRef.RID, branch)
 			return map[string]pipeline.Row{}, nil
 		}
+		if isPermissionDeniedError(err) {
+			logger.Printf(
+				"run=%s incremental: no permission to read prior output snapshot for %s@%s; proceeding without cache",
+				runID,
+				outputRef.RID,
+				branch,
+			)
+			return map[string]pipeline.Row{}, nil
+		}
 		return nil, fmt.Errorf("read prior output dataset snapshot: %w", err)
 	}
 
@@ -542,6 +627,11 @@ func chooseBestIncrementalRow(a, b pipeline.Row) pipeline.Row {
 func isNotFoundError(err error) bool {
 	var he *foundry.HTTPError
 	return errors.As(err, &he) && he.StatusCode == 404
+}
+
+func isPermissionDeniedError(err error) bool {
+	var he *foundry.HTTPError
+	return errors.As(err, &he) && he.StatusCode == 403
 }
 
 func emailKey(email string) string {

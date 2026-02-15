@@ -252,6 +252,56 @@ func (c *Client) ProbeStream(ctx context.Context, streamRID, branch string) (boo
 	return true, nil
 }
 
+// ReadStreamRecords reads stream records for a stream branch via stream-proxy.
+//
+// Note: this endpoint returns the full record list in this minimal client.
+// In real deployments, streams can be large; callers should treat this as best-effort.
+func (c *Client) ReadStreamRecords(ctx context.Context, streamRID, branch string) ([]map[string]any, error) {
+	streamRID = strings.TrimSpace(streamRID)
+	branch = strings.TrimSpace(branch)
+	if streamRID == "" {
+		return nil, fmt.Errorf("stream rid is required")
+	}
+	if branch == "" {
+		branch = "master"
+	}
+
+	u := c.resolveStream(fmt.Sprintf(
+		"streams/%s/branches/%s/records",
+		url.PathEscape(streamRID),
+		url.PathEscape(branch),
+	))
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		_ = resp.Body.Close()
+	}()
+
+	rb, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode/100 != 2 {
+		return nil, newHTTPError("readStreamRecords", resp, rb)
+	}
+
+	var recs []map[string]any
+	if err := json.Unmarshal(rb, &recs); err != nil {
+		return nil, fmt.Errorf("parse stream records response: %w", err)
+	}
+	return recs, nil
+}
+
 // PublishStreamJSONRecord publishes one JSON object to a stream branch via stream-proxy.
 func (c *Client) PublishStreamJSONRecord(ctx context.Context, streamRID, branch string, record map[string]any) error {
 	streamRID = strings.TrimSpace(streamRID)
