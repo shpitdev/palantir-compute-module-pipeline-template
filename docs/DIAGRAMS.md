@@ -105,16 +105,16 @@ sequenceDiagram
     participant CM as Compute Module (container)
     participant API as Foundry API Gateway
 
-    CM->>API: POST /api/v2/datasets/{outputRid}/transactions?branchName={branch}
+    CM->>API: POST /api/v2/datasets/OUTPUT_RID/transactions?branchName=BRANCH
     API-->>CM: 409 OpenTransactionAlreadyExists
 
-    CM->>API: GET /api/v2/datasets/{outputRid}/transactions?preview=true
+    CM->>API: GET /api/v2/datasets/OUTPUT_RID/transactions?preview=true
     API-->>CM: list transactions (includes OPEN)
 
-    CM->>API: POST /api/v2/datasets/{outputRid}/files/{filePath}/upload?transactionRid={openTxnRid}
+    CM->>API: POST /api/v2/datasets/OUTPUT_RID/files/FILE_PATH/upload?transactionRid=OPEN_TXN_RID
     API-->>CM: 200 OK
 
-    Note over CM: Do NOT commit in this case; Foundry pipeline will commit.
+    Note over CM,API: In pipeline mode, Foundry will commit the OPEN transaction.
 ```
 
 ## Scenario: Stream Incremental Cache Read Failures

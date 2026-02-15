@@ -1,24 +1,28 @@
 # palantir-compute-module-pipeline-search
 
+<!-- Release & CI -->
 [![Release](https://img.shields.io/github/v/tag/anand-testcompare/palantir-compute-module-pipeline-search?sort=semver&label=release)](https://github.com/anand-testcompare/palantir-compute-module-pipeline-search/releases)
 [![Foundry Publish](https://github.com/anand-testcompare/palantir-compute-module-pipeline-search/actions/workflows/publish-foundry.yml/badge.svg?branch=main)](https://github.com/anand-testcompare/palantir-compute-module-pipeline-search/actions/workflows/publish-foundry.yml)
 [![Release Automation](https://github.com/anand-testcompare/palantir-compute-module-pipeline-search/actions/workflows/release-version.yml/badge.svg?branch=main)](https://github.com/anand-testcompare/palantir-compute-module-pipeline-search/actions/workflows/release-version.yml)
 
+<!-- Core stack -->
+[![Go](https://img.shields.io/badge/Go-1.25-00ADD8?logo=go&logoColor=white)](https://go.dev/doc/)
+[![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white)](https://docs.docker.com/compose/)
+[![Palantir Foundry](https://img.shields.io/badge/Palantir_Foundry-Compute_Module-0B74DE)](https://www.palantir.com/platforms/foundry/)
+[![Gemini](https://img.shields.io/badge/Google_Gemini-API-4285F4?logo=google&logoColor=white)](https://ai.google.dev/)
+[![Mermaid](https://img.shields.io/badge/Mermaid-Diagrams-FF3670?logo=mermaid&logoColor=white)](https://mermaid.js.org/)
+
 Pipeline-mode Foundry Compute Module (Go) that:
 
 1. Reads a dataset of email addresses
-2. Enriches each email via Gemini (Google Search grounding + URL context + structured output)
-3. Writes an output dataset
+2. Enriches each email via Gemini (grounding + URL context + structured output)
+3. Writes enriched rows to either:
+   - a snapshot dataset (transactions), or
+   - a streaming dataset (stream-proxy)
 
-This runs as a Foundry Compute Module and executes a pipeline job that:
+Local-first workflow: iterate locally (mock Foundry APIs + real container) and deploy the same image into Foundry.
 
-- Reads an input dataset of email addresses
-- Enriches each email via Gemini
-- Writes enriched rows to either a snapshot dataset (transactions) or a streaming dataset (stream-proxy)
-
-In Foundry, compute modules are deployed as long-running containers. This repo runs its pipeline logic once per module start and then keeps the process alive so the platform does not restart it (which would re-run the pipeline and can duplicate stream outputs).
-
-It is also runnable locally (without Foundry) against local files.
+Note: compute modules run as long-lived containers. This module runs the pipeline once per container start and then keeps the process alive so the platform does not restart it (which would re-run the pipeline and can duplicate stream outputs).
 
 ## Repo Layout
 
@@ -37,7 +41,7 @@ External-consumer contracts are validated in:
 
 ## Development
 
-Canonical developer entrypoint:
+Canonical entrypoint:
 
 ```bash
 ./dev help
@@ -85,18 +89,11 @@ Run a long-lived local dev loop (watches input CSV and reruns automatically):
 ./dev run foundry-emulated --watch
 ```
 
-`./dev run foundry-emulated` now runs a preflight checklist before compose starts:
-- verifies local fixture/config paths
-- verifies local harness directories are writable
-- attempts an automatic ownership fix for `.local/` when needed
+`./dev run foundry-emulated --watch` starts a tight local loop:
 
-`./dev run foundry-emulated --watch`:
-- starts mock-foundry
-- runs enricher once immediately
-- watches the input CSV for changes (2s polling) and reruns automatically
-- uses `REQUEST_TIMEOUT` per email (default `2m` in `docker-compose.local.yml`; Foundry runtime default is `30s` if `REQUEST_TIMEOUT` is not set)
-- for dataset outputs, reuses previously committed `status=ok` rows by `email` and enriches only new/changed rows
-- validates output after each rerun and prints failures
+- starts mock-foundry + a real container
+- runs once immediately, then reruns on input CSV edits
+- reuses prior `status=ok` rows by `email` (best-effort incremental cache)
 - stops cleanly on `Ctrl+C`
 
 ### Local Watch Loop Quickstart
@@ -152,31 +149,21 @@ Note: CI jobs that require Gemini secrets are skipped automatically if `GEMINI_A
 - `docs/TROUBLESHOOTING.md`: common deployment failures and diagnosis
 - `docs/DIAGRAMS.md`: Mermaid sequence diagrams + flowcharts for API usage scenarios
 
-## Configuration Defaults
+## Defaults (high-signal)
 
-The module behavior is controlled primarily via env vars (Foundry) / flags (local and Foundry). Defaults differ between:
+Defaults differ between:
 
-- the binary's internal fallbacks (used when env vars are unset)
-- the local docker-compose harness (which sets its own defaults in `docker-compose.local.yml`)
+- binary internal fallbacks (used when env vars are unset in Foundry)
+- local docker-compose harness defaults in `docker-compose.local.yml`
 
-Pipeline options (binary defaults):
+Key ones:
 
-| Option | Env var | Default | Notes |
-| --- | --- | --- | --- |
-| Workers | `WORKERS` | `10` | global concurrency for enrichment |
-| Max retries | `MAX_RETRIES` | `3` | transient errors only |
-| Per-email timeout | `REQUEST_TIMEOUT` | `30s` | local compose sets `2m` by default |
-| Rate limit | `RATE_LIMIT_RPS` | `0` | `0` disables rate limiting |
-| Fail fast | `FAIL_FAST` | `false` | when true, any enrichment error fails the run |
+- `REQUEST_TIMEOUT`: `30s` binary fallback; local compose sets `2m`
+- `WORKERS`: `10`
+- `MAX_RETRIES`: `3`
+- `FAIL_FAST`: `false`
 
-Gemini options:
-
-| Option | Env var | Default | Notes |
-| --- | --- | --- | --- |
-| API key | `GEMINI_API_KEY` | required | can be literal key or a file path containing the key |
-| Model | `GEMINI_MODEL` | required | local compose defaults to `gemini-2.5-flash` |
-| Base URL | `GEMINI_BASE_URL` | empty | optional proxy/testing |
-| Capture audit | `GEMINI_CAPTURE_AUDIT` | `false` | local compose defaults to `true` |
+For the full set of options and Foundry configuration, see `docs/RELEASE.md`.
 
 ## Screenshots
 
