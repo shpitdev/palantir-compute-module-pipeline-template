@@ -295,11 +295,70 @@ func (c *Client) ReadStreamRecords(ctx context.Context, streamRID, branch string
 		return nil, newHTTPError("readStreamRecords", resp, rb)
 	}
 
-	var recs []map[string]any
-	if err := json.Unmarshal(rb, &recs); err != nil {
+	recs, err := parseStreamRecordsResponse(rb)
+	if err != nil {
 		return nil, fmt.Errorf("parse stream records response: %w", err)
 	}
 	return recs, nil
+}
+
+func parseStreamRecordsResponse(body []byte) ([]map[string]any, error) {
+	var top any
+	if err := json.Unmarshal(body, &top); err != nil {
+		return nil, err
+	}
+
+	// Stream-proxy response shapes vary by stack/version.
+	// Known patterns include:
+	// - [ {..record..}, ... ]
+	// - { "records": [ ... ] }
+	// - { "values": [ ... ], "nextPageToken": "..." }
+	// - { "values": [ {"record": {..}}, ... ] }
+	//
+	// We keep this permissive and best-effort.
+	return extractRecordList(top)
+}
+
+func extractRecordList(v any) ([]map[string]any, error) {
+	switch t := v.(type) {
+	case []any:
+		out := make([]map[string]any, 0, len(t))
+		for _, item := range t {
+			m, ok := item.(map[string]any)
+			if !ok {
+				// Ignore non-object items.
+				continue
+			}
+			out = append(out, m)
+		}
+		return out, nil
+	case map[string]any:
+		// Prefer well-known paging keys.
+		for _, key := range []string{"records", "values", "data", "items", "result"} {
+			if inner, ok := t[key]; ok {
+				if recs, err := extractRecordList(inner); err == nil {
+					return recs, nil
+				}
+			}
+		}
+
+		// Fallback: pick the first array field that looks like a list of objects.
+		for _, inner := range t {
+			arr, ok := inner.([]any)
+			if !ok {
+				continue
+			}
+			// Heuristic: require at least one object element.
+			for _, item := range arr {
+				if _, ok := item.(map[string]any); ok {
+					return extractRecordList(arr)
+				}
+			}
+		}
+		return nil, fmt.Errorf("unexpected json object shape")
+	default:
+		return nil, fmt.Errorf("unexpected json type %T", v)
+	}
 }
 
 // PublishStreamJSONRecord publishes one JSON object to a stream branch via stream-proxy.
