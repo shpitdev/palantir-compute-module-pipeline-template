@@ -133,7 +133,27 @@ func RunFoundry(
 
 	enrichStart := time.Now()
 	if isStream {
-		logf("incremental mode disabled for stream output; append-only streams require explicit checkpointing for dedupe")
+		existingByEmail, err := readExistingOutputRows(ctx, client, outputRef, logger, runID)
+		if err != nil {
+			return err
+		}
+		plan := buildIncrementalPlan(emails, existingByEmail)
+		logf(
+			"incremental plan (stream): inputRows=%d cachedRows=%d rowsToEnrich=%d uniqueEmailsToEnrich=%d",
+			len(emails),
+			plan.cachedRows,
+			plan.pendingRows,
+			len(plan.pendingEmails),
+		)
+
+		if len(plan.pendingEmails) == 0 {
+			logf(
+				"foundry run complete: stream output is up-to-date (no rows to enrich) totalDuration=%s",
+				time.Since(runStart).Round(time.Millisecond),
+			)
+			return nil
+		}
+
 		writeStart := time.Now()
 		logf("publishing rows to stream-proxy (%s@%s)", outputRef.RID, outputBranch)
 
@@ -141,7 +161,7 @@ func RunFoundry(
 		publishedRows := 0
 		okRows := 0
 		errorRows := 0
-		err = pipeline.EnrichEmailsStream(ctx, emails, newTracedEnricher(enricher, logger, runID, opts), opts, func(row pipeline.Row) error {
+		err = pipeline.EnrichEmailsStream(ctx, plan.pendingEmails, newTracedEnricher(enricher, logger, runID, opts), opts, func(row pipeline.Row) error {
 			processedRows++
 			if strings.EqualFold(strings.TrimSpace(row.Status), "ok") {
 				okRows++
@@ -154,23 +174,29 @@ func RunFoundry(
 				row.Email,
 				strings.TrimSpace(row.Status),
 				processedRows,
-				len(emails),
+				len(plan.pendingEmails),
 				time.Since(enrichStart).Round(time.Millisecond),
 			)
 
+			writtenAt := time.Now().UTC().Format(time.RFC3339Nano)
+			rec := rowToStreamRecord(row)
+			rec["run_id"] = runID
+			rec["written_at"] = writtenAt
+
 			publishStart := time.Now()
-			if err := foundryio.PublishJSONRecord(ctx, client, outputRef, rowToStreamRecord(row)); err != nil {
+			if err := foundryio.PublishJSONRecord(ctx, client, outputRef, rec); err != nil {
 				return err
 			}
 
 			publishedRows++
 			logf(
-				"stream row published: email=%q status=%q publishDuration=%s published=%d/%d",
+				"stream row published: email=%q status=%q writtenAt=%q publishDuration=%s published=%d/%d",
 				row.Email,
 				strings.TrimSpace(row.Status),
+				writtenAt,
 				time.Since(publishStart).Round(time.Millisecond),
 				publishedRows,
-				len(emails),
+				len(plan.pendingEmails),
 			)
 			return nil
 		})
@@ -487,10 +513,30 @@ func readExistingOutputRows(
 		if key == "" {
 			continue
 		}
-		out[key] = row
+		prev, ok := out[key]
+		if !ok {
+			out[key] = row
+			continue
+		}
+		out[key] = chooseBestIncrementalRow(prev, row)
 	}
 	logger.Printf("run=%s incremental: loaded %d prior output rows from %s@%s", runID, len(out), outputRef.RID, branch)
 	return out, nil
+}
+
+func chooseBestIncrementalRow(a, b pipeline.Row) pipeline.Row {
+	aOk := strings.EqualFold(strings.TrimSpace(a.Status), "ok")
+	bOk := strings.EqualFold(strings.TrimSpace(b.Status), "ok")
+	if aOk && !bOk {
+		return a
+	}
+	if bOk && !aOk {
+		return b
+	}
+
+	// If neither is ok (or both are ok), prefer the latter. This is a best-effort heuristic:
+	// readTable ordering is not always stable, but we mainly want "any ok" to win.
+	return b
 }
 
 func isNotFoundError(err error) bool {

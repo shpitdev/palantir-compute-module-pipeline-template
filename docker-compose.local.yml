@@ -19,6 +19,7 @@ services:
       MOCK_FOUNDRY_ADDR: ":8080"
       MOCK_FOUNDRY_INPUT_DIR: "/data/inputs"
       MOCK_FOUNDRY_UPLOAD_DIR: "/data/uploads"
+      MOCK_FOUNDRY_STREAM_RIDS: "${MOCK_FOUNDRY_STREAM_RIDS:-}"
     volumes:
       - ./.local/mock-foundry/inputs:/data/inputs:ro
       - ./.local/mock-foundry/uploads:/data/uploads

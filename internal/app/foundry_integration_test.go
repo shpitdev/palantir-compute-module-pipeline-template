@@ -355,6 +355,78 @@ func TestRunFoundry_IncrementalDatasetSkipsCachedRows(t *testing.T) {
 	}
 }
 
+func TestRunFoundry_IncrementalStreamSkipsCachedRows(t *testing.T) {
+	t.Parallel()
+
+	inputRID := "ri.foundry.main.dataset.11111111-1111-1111-1111-111111111111"
+	outputRID := "ri.foundry.main.dataset.22222222-2222-2222-2222-222222222222"
+
+	inputDir := t.TempDir()
+	uploadDir := t.TempDir()
+
+	writeInput := func(content string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(inputDir, inputRID+".csv"), []byte(content), 0644); err != nil {
+			t.Fatalf("write input csv: %v", err)
+		}
+	}
+	writeInput("email\nalice@example.com\nbob@corp.test\n")
+
+	mock := mockfoundry.New(inputDir, uploadDir)
+	mock.CreateStream(outputRID)
+	mock.RequireBearerToken("dummy-token")
+	ts := httptest.NewServer(mock.Handler())
+	defer ts.Close()
+
+	env := foundry.Env{
+		Services: foundry.Services{
+			APIGateway:  ts.URL + "/api",
+			StreamProxy: ts.URL + "/stream-proxy/api",
+		},
+		Token: "dummy-token",
+		Aliases: map[string]foundry.DatasetRef{
+			"input":  {RID: inputRID, Branch: "master"},
+			"output": {RID: outputRID, Branch: "master"},
+		},
+	}
+
+	enricher := &countingEnricher{}
+
+	if err := app.RunFoundry(context.Background(), env, "input", "output", "enriched.csv", "auto", pipeline.Options{}, enricher); err != nil {
+		t.Fatalf("first RunFoundry failed: %v", err)
+	}
+	if enricher.count("alice@example.com") != 1 || enricher.count("bob@corp.test") != 1 {
+		t.Fatalf("unexpected first-run call counts: alice=%d bob=%d", enricher.count("alice@example.com"), enricher.count("bob@corp.test"))
+	}
+	if recs := mock.StreamRecords(outputRID, "master"); len(recs) != 2 {
+		t.Fatalf("expected 2 stream records after first run, got %d: %#v", len(recs), recs)
+	}
+
+	if err := app.RunFoundry(context.Background(), env, "input", "output", "enriched.csv", "auto", pipeline.Options{}, enricher); err != nil {
+		t.Fatalf("second RunFoundry failed: %v", err)
+	}
+	if enricher.count("alice@example.com") != 1 {
+		t.Fatalf("expected alice to be cached on second run, got %d calls", enricher.count("alice@example.com"))
+	}
+	if enricher.count("bob@corp.test") != 1 {
+		t.Fatalf("expected bob to be cached on second run, got %d calls", enricher.count("bob@corp.test"))
+	}
+	if recs := mock.StreamRecords(outputRID, "master"); len(recs) != 2 {
+		t.Fatalf("expected 2 stream records after second run, got %d: %#v", len(recs), recs)
+	}
+
+	writeInput("email\nalice@example.com\nbob@corp.test\ncarol@new.test\n")
+	if err := app.RunFoundry(context.Background(), env, "input", "output", "enriched.csv", "auto", pipeline.Options{}, enricher); err != nil {
+		t.Fatalf("third RunFoundry failed: %v", err)
+	}
+	if enricher.count("carol@new.test") != 1 {
+		t.Fatalf("expected carol to be enriched once, got %d calls", enricher.count("carol@new.test"))
+	}
+	if recs := mock.StreamRecords(outputRID, "master"); len(recs) != 3 {
+		t.Fatalf("expected 3 stream records after adding one email, got %d: %#v", len(recs), recs)
+	}
+}
+
 func TestRunFoundry_WritesToStreamProxyWhenOutputIsStream(t *testing.T) {
 	t.Parallel()
 
@@ -395,8 +467,8 @@ func TestRunFoundry_WritesToStreamProxyWhenOutputIsStream(t *testing.T) {
 	}
 
 	calls := mock.Calls()
-	if len(calls) != 5 {
-		t.Fatalf("expected 5 calls, got %d: %#v", len(calls), calls)
+	if len(calls) != 7 {
+		t.Fatalf("expected 7 calls, got %d: %#v", len(calls), calls)
 	}
 	if calls[0].Method != "GET" || calls[0].Path != "/api/v2/datasets/"+inputRID+"/branches/master" {
 		t.Fatalf("call[0] mismatch: %#v (all calls=%#v)", calls[0], calls)
@@ -408,12 +480,18 @@ func TestRunFoundry_WritesToStreamProxyWhenOutputIsStream(t *testing.T) {
 	if calls[2].Method != "GET" || calls[2].Path != wantProbePath {
 		t.Fatalf("call[2] mismatch: %#v (all calls=%#v)", calls[2], calls)
 	}
-	wantPublishPath := "/stream-proxy/api/streams/" + outputRID + "/branches/master/jsonRecord"
-	if calls[3].Method != "POST" || calls[3].Path != wantPublishPath {
+	if calls[3].Method != "GET" || calls[3].Path != "/api/v2/datasets/"+outputRID+"/branches/master" {
 		t.Fatalf("call[3] mismatch: %#v (all calls=%#v)", calls[3], calls)
 	}
-	if calls[4].Method != "POST" || calls[4].Path != wantPublishPath {
+	if calls[4].Method != "GET" || calls[4].Path != "/api/v2/datasets/"+outputRID+"/readTable" {
 		t.Fatalf("call[4] mismatch: %#v (all calls=%#v)", calls[4], calls)
+	}
+	wantPublishPath := "/stream-proxy/api/streams/" + outputRID + "/branches/master/jsonRecord"
+	if calls[5].Method != "POST" || calls[5].Path != wantPublishPath {
+		t.Fatalf("call[5] mismatch: %#v (all calls=%#v)", calls[5], calls)
+	}
+	if calls[6].Method != "POST" || calls[6].Path != wantPublishPath {
+		t.Fatalf("call[6] mismatch: %#v (all calls=%#v)", calls[6], calls)
 	}
 
 	recs := mock.StreamRecords(outputRID, "master")
@@ -434,6 +512,17 @@ func TestRunFoundry_WritesToStreamProxyWhenOutputIsStream(t *testing.T) {
 		status, _ := rec["status"].(string)
 		if status != "ok" {
 			t.Fatalf("expected status ok for %q, got %#v", email, rec)
+		}
+		runID, _ := rec["run_id"].(string)
+		if strings.TrimSpace(runID) == "" {
+			t.Fatalf("expected run_id to be set for %q, got %#v", email, rec)
+		}
+		writtenAt, _ := rec["written_at"].(string)
+		if strings.TrimSpace(writtenAt) == "" {
+			t.Fatalf("expected written_at to be set for %q, got %#v", email, rec)
+		}
+		if _, err := time.Parse(time.RFC3339Nano, writtenAt); err != nil {
+			t.Fatalf("expected written_at to be RFC3339Nano for %q, got %q (%v)", email, writtenAt, err)
 		}
 		if email == "alice@example.com" && rec["company"] != "example.com" {
 			t.Fatalf("unexpected alice record: %#v", rec)

@@ -1,8 +1,10 @@
 package mockfoundry
 
 import (
+	"bytes"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/csv"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -532,6 +534,75 @@ func (s *Server) handleV2Datasets(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) serveReadTableCSV(w http.ResponseWriter, r *http.Request, datasetRID string) {
+	// Streaming datasets are append-only and written via stream-proxy. In Foundry, they are still
+	// queryable/tabular. For local harnesses, expose a CSV view of the accumulated stream records so
+	// pipeline code can implement read-after-write and incremental behavior.
+	s.mu.Lock()
+	_, isStream := s.streams[datasetRID]
+	s.mu.Unlock()
+	if isStream {
+		branch := strings.TrimSpace(r.URL.Query().Get("branchName"))
+		if branch == "" {
+			branch = strings.TrimSpace(r.URL.Query().Get("branchId"))
+		}
+		if branch == "" {
+			branch = "master"
+		}
+
+		// Stable base header: must include the columns expected by pipeline.ReadCSV.
+		// Keep this list in sync with examples/email_enricher/pipeline.Header().
+		header := []string{
+			"email",
+			"linkedin_url",
+			"company",
+			"title",
+			"description",
+			"confidence",
+			"status",
+			"error",
+			"model",
+			"sources",
+			"web_search_queries",
+			// Optional metadata columns (extra columns are ignored by the pipeline reader).
+			"run_id",
+			"written_at",
+		}
+
+		var buf bytes.Buffer
+		cw := csv.NewWriter(&buf)
+		_ = cw.Write(header)
+
+		recs := s.StreamRecords(datasetRID, branch)
+		for _, rec := range recs {
+			row := make([]string, 0, len(header))
+			for _, col := range header {
+				v, ok := rec[col]
+				if !ok || v == nil {
+					row = append(row, "")
+					continue
+				}
+				s, ok := v.(string)
+				if ok {
+					row = append(row, s)
+					continue
+				}
+				row = append(row, fmt.Sprint(v))
+			}
+			_ = cw.Write(row)
+		}
+		cw.Flush()
+		if err := cw.Error(); err != nil {
+			writeAPIError(w, http.StatusInternalServerError, "Default:Internal", "INTERNAL", map[string]any{
+				"message": "write stream readTable csv",
+			})
+			return
+		}
+
+		w.Header().Set("Content-Type", "text/csv")
+		_, _ = w.Write(buf.Bytes())
+		return
+	}
+
 	branchID := strings.TrimSpace(r.URL.Query().Get("branchId"))
 	branchName := strings.TrimSpace(r.URL.Query().Get("branchName"))
 	if branchID == "" && branchName != "" {
