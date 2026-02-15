@@ -6,7 +6,7 @@
 [![Release Automation](https://github.com/anand-testcompare/palantir-compute-module-pipeline-search/actions/workflows/release-version.yml/badge.svg?branch=main)](https://github.com/anand-testcompare/palantir-compute-module-pipeline-search/actions/workflows/release-version.yml)
 
 <!-- Core stack -->
-[![Go](https://img.shields.io/badge/Go-1.24-00ADD8?logo=go&logoColor=white)](https://go.dev/doc/)
+[![Go](https://img.shields.io/badge/Go-1.25-00ADD8?logo=go&logoColor=white)](https://go.dev/doc/)
 [![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white)](https://docs.docker.com/compose/)
 [![Palantir Foundry](https://img.shields.io/badge/Palantir_Foundry-Compute_Module-0B74DE)](https://www.palantir.com/platforms/foundry/)
 [![Gemini](https://img.shields.io/badge/Google_Gemini-API-4285F4?logo=google&logoColor=white)](https://ai.google.dev/)
