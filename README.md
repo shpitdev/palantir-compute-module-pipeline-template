@@ -94,7 +94,7 @@ Run a long-lived local dev loop (watches input CSV and reruns automatically):
 - starts mock-foundry
 - runs enricher once immediately
 - watches the input CSV for changes (2s polling) and reruns automatically
-- uses `REQUEST_TIMEOUT` per email (default `2m` in local compose)
+- uses `REQUEST_TIMEOUT` per email (default `2m` in `docker-compose.local.yml`; Foundry runtime default is `30s` if `REQUEST_TIMEOUT` is not set)
 - for dataset outputs, reuses previously committed `status=ok` rows by `email` and enriches only new/changed rows
 - validates output after each rerun and prints failures
 - stops cleanly on `Ctrl+C`
@@ -150,3 +150,41 @@ Note: CI jobs that require Gemini secrets are skipped automatically if `GEMINI_A
 - `docs/DESIGN.md`: architecture, interfaces, local testing approach
 - `docs/RELEASE.md`: Foundry configuration steps (Sources, egress, probes) and publishing guidance
 - `docs/TROUBLESHOOTING.md`: common deployment failures and diagnosis
+- `docs/DIAGRAMS.md`: Mermaid sequence diagrams + flowcharts for API usage scenarios
+
+## Configuration Defaults
+
+The module behavior is controlled primarily via env vars (Foundry) / flags (local and Foundry). Defaults differ between:
+
+- the binary's internal fallbacks (used when env vars are unset)
+- the local docker-compose harness (which sets its own defaults in `docker-compose.local.yml`)
+
+Pipeline options (binary defaults):
+
+| Option | Env var | Default | Notes |
+| --- | --- | --- | --- |
+| Workers | `WORKERS` | `10` | global concurrency for enrichment |
+| Max retries | `MAX_RETRIES` | `3` | transient errors only |
+| Per-email timeout | `REQUEST_TIMEOUT` | `30s` | local compose sets `2m` by default |
+| Rate limit | `RATE_LIMIT_RPS` | `0` | `0` disables rate limiting |
+| Fail fast | `FAIL_FAST` | `false` | when true, any enrichment error fails the run |
+
+Gemini options:
+
+| Option | Env var | Default | Notes |
+| --- | --- | --- | --- |
+| API key | `GEMINI_API_KEY` | required | can be literal key or a file path containing the key |
+| Model | `GEMINI_MODEL` | required | local compose defaults to `gemini-2.5-flash` |
+| Base URL | `GEMINI_BASE_URL` | empty | optional proxy/testing |
+| Capture audit | `GEMINI_CAPTURE_AUDIT` | `false` | local compose defaults to `true` |
+
+## Screenshots
+
+Put Foundry UI screenshots in `docs/screenshots/` and reference them from this README.
+
+- Convention: `docs/screenshots/<short-topic>-<yyyy-mm-dd>.png`
+- Example:
+
+```md
+![Compute module run in Foundry](docs/screenshots/compute-module-run-2026-02-15.png)
+```

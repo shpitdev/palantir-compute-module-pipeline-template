@@ -146,7 +146,7 @@ The module can be implemented with a thin HTTP client hitting a small API surfac
 - `GET  /api/v2/datasets/{rid}/transactions?preview=true` (preview; used to discover existing `OPEN` transactions)
 - `POST /api/v2/datasets/{rid}/files/{filePath}/upload?transactionRid={txn}`
 - `POST /api/v2/datasets/{rid}/transactions/{txn}/commit`
-- `GET  /stream-proxy/api/streams/{rid}/branches/{branch}/records` (used for write-mode probing)
+- `GET  /stream-proxy/api/streams/{rid}/branches/{branch}/records` (used for write-mode probing and best-effort incremental cache reads; response shape may be an array or an envelope depending on stack)
 - `POST /stream-proxy/api/streams/{rid}/branches/{branch}/jsonRecord`
 
 ## Schema Contract
