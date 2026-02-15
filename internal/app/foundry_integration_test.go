@@ -352,6 +352,99 @@ func TestRunFoundry_StreamMode_UsesStreamCacheWhenDatasetReadForbidden(t *testin
 	}
 }
 
+func TestRunFoundry_StreamMode_ParsesWrappedStreamRecordsResponse(t *testing.T) {
+	t.Parallel()
+
+	inputRID := "ri.foundry.main.dataset.11111111-1111-1111-1111-111111111111"
+	outputRID := "ri.foundry.main.dataset.22222222-2222-2222-2222-222222222222"
+
+	inputDir := t.TempDir()
+	uploadDir := t.TempDir()
+
+	if err := os.WriteFile(
+		filepath.Join(inputDir, inputRID+".csv"),
+		[]byte("email\nalice@example.com\nbob@corp.test\n"),
+		0644,
+	); err != nil {
+		t.Fatalf("write input csv: %v", err)
+	}
+
+	mock := mockfoundry.New(inputDir, uploadDir)
+	mock.RequireBearerToken("dummy-token")
+	mock.CreateStream(outputRID)
+
+	base := mock.Handler()
+	wrapped := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Wrap stream-proxy records in an envelope and a per-record wrapper.
+		if r.Method == http.MethodGet && r.URL.Path == "/stream-proxy/api/streams/"+outputRID+"/branches/master/records" {
+			rr := httptest.NewRecorder()
+			base.ServeHTTP(rr, r)
+			if rr.Code/100 != 2 {
+				w.WriteHeader(rr.Code)
+				_, _ = w.Write(rr.Body.Bytes())
+				return
+			}
+
+			var raw []map[string]any
+			if err := json.Unmarshal(rr.Body.Bytes(), &raw); err != nil {
+				w.WriteHeader(http.StatusInternalServerError)
+				_, _ = w.Write([]byte("bad mock stream records"))
+				return
+			}
+			values := make([]map[string]any, 0, len(raw))
+			for _, rec := range raw {
+				values = append(values, map[string]any{"record": rec})
+			}
+
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"values":        values,
+				"nextPageToken": nil,
+			})
+			return
+		}
+		base.ServeHTTP(w, r)
+	})
+
+	ts := httptest.NewServer(wrapped)
+	defer ts.Close()
+
+	env := foundry.Env{
+		Services: foundry.Services{
+			APIGateway:  ts.URL + "/api",
+			StreamProxy: ts.URL + "/stream-proxy/api",
+		},
+		Token: "dummy-token",
+		Aliases: map[string]foundry.DatasetRef{
+			"input":  {RID: inputRID, Branch: "master"},
+			"output": {RID: outputRID, Branch: "master"},
+		},
+	}
+
+	client, err := foundry.NewClient(env.Services.APIGateway, env.Services.StreamProxy, env.Token, env.DefaultCAPath)
+	if err != nil {
+		t.Fatalf("new foundry client: %v", err)
+	}
+	if err := client.PublishStreamJSONRecord(context.Background(), outputRID, "master", map[string]any{
+		"email":  "alice@example.com",
+		"status": "ok",
+	}); err != nil {
+		t.Fatalf("seed stream record: %v", err)
+	}
+
+	enricher := &countingEnricher{}
+	if err := app.RunFoundry(context.Background(), env, "input", "output", "", "auto", pipeline.Options{}, enricher); err != nil {
+		t.Fatalf("RunFoundry failed: %v", err)
+	}
+	if enricher.count("alice@example.com") != 0 {
+		t.Fatalf("expected alice to be cached from stream records, got %d calls", enricher.count("alice@example.com"))
+	}
+	if enricher.count("bob@corp.test") != 1 {
+		t.Fatalf("expected bob to be enriched once, got %d calls", enricher.count("bob@corp.test"))
+	}
+}
+
 func TestRunFoundry_UsesExistingOpenTransactionWhenCreateConflicts(t *testing.T) {
 	t.Parallel()
 

@@ -297,7 +297,7 @@ func readExistingStreamRows(
 
 	out := make(map[string]pipeline.Row, len(recs))
 	for _, rec := range recs {
-		row := rowFromStreamRecord(rec)
+		row := rowFromStreamRecord(normalizeStreamRecord(rec))
 		key := emailKey(row.Email)
 		if key == "" {
 			continue
@@ -311,6 +311,19 @@ func readExistingStreamRows(
 	}
 	logger.Printf("run=%s incremental: loaded %d prior stream rows from %s@%s", runID, len(out), outputRef.RID, branch)
 	return out, nil
+}
+
+func normalizeStreamRecord(rec map[string]any) map[string]any {
+	if rec == nil {
+		return nil
+	}
+	// Some stream-proxy responses wrap the actual record under a key.
+	for _, key := range []string{"record", "value", "data"} {
+		if inner, ok := rec[key].(map[string]any); ok {
+			return inner
+		}
+	}
+	return rec
 }
 
 func rowFromStreamRecord(rec map[string]any) pipeline.Row {
