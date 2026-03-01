@@ -14,7 +14,7 @@ permissions:
 
 jobs:
   verify:
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@v4
 
@@ -50,7 +50,7 @@ jobs:
           path: out/enricher_linux_amd64
 
   gemini-e2e:
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     needs: verify
     steps:
       - name: Check Gemini secrets
@@ -98,7 +98,7 @@ jobs:
           if-no-files-found: warn
 
   docker-compose-e2e:
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     needs: verify
     steps:
       - name: Check Gemini secrets
