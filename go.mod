@@ -1,10 +1,10 @@
 module github.com/palantir/palantir-compute-module-pipeline-search
 
-go 1.25
+go 1.25.0
 
 require (
-	golang.org/x/time v0.14.0
-	google.golang.org/genai v1.48.0
+	golang.org/x/time v0.15.0
+	google.golang.org/genai v1.49.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 
