@@ -5,10 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
 	"strings"
-	"syscall"
-	"time"
 
 	"github.com/palantir/palantir-compute-module-pipeline-search/pkg/foundry"
 	localio "github.com/palantir/palantir-compute-module-pipeline-search/pkg/pipeline/io/local"
@@ -23,7 +20,7 @@ const (
 // ReadInputEmails reads input rows from a Foundry dataset and extracts the email column.
 func ReadInputEmails(ctx context.Context, client *foundry.Client, inputRef foundry.DatasetRef) ([]string, error) {
 	var inputBytes []byte
-	err := retryTransient(ctx, 8, 200*time.Millisecond, func() error {
+	err := RetryTransient(ctx, DefaultRetryPolicy, func() error {
 		var err error
 		inputBytes, err = client.ReadTableCSV(ctx, inputRef.RID, inputRef.Branch)
 		return err
@@ -36,6 +33,11 @@ func ReadInputEmails(ctx context.Context, client *foundry.Client, inputRef found
 
 // ResolveOutputMode resolves whether output should be written to stream-proxy.
 func ResolveOutputMode(ctx context.Context, client *foundry.Client, outputRef foundry.DatasetRef, requestedMode string) (bool, error) {
+	return ResolveOutputModeWithBackend(ctx, NewLegacyStreamProxyBackend(client), outputRef, requestedMode)
+}
+
+// ResolveOutputModeWithBackend resolves whether output should be written through a stream backend.
+func ResolveOutputModeWithBackend(ctx context.Context, backend StreamBackend, outputRef foundry.DatasetRef, requestedMode string) (bool, error) {
 	mode := strings.ToLower(strings.TrimSpace(requestedMode))
 	if mode == "" {
 		mode = OutputModeAuto
@@ -43,16 +45,10 @@ func ResolveOutputMode(ctx context.Context, client *foundry.Client, outputRef fo
 
 	switch mode {
 	case OutputModeAuto:
-		branch := strings.TrimSpace(outputRef.Branch)
-		if branch == "" {
-			branch = "master"
+		if backend == nil {
+			return false, fmt.Errorf("stream backend is required for auto output mode")
 		}
-		isStream := false
-		err := retryTransient(ctx, 8, 200*time.Millisecond, func() error {
-			var err error
-			isStream, err = client.ProbeStream(ctx, outputRef.RID, branch)
-			return err
-		})
+		isStream, err := backend.Probe(ctx, outputRef)
 		if err != nil {
 			return false, err
 		}
@@ -68,8 +64,9 @@ func ResolveOutputMode(ctx context.Context, client *foundry.Client, outputRef fo
 
 // PublishJSONRecords publishes one JSON object per row to stream-proxy.
 func PublishJSONRecords(ctx context.Context, client *foundry.Client, outputRef foundry.DatasetRef, records []map[string]any) error {
+	backend := NewLegacyStreamProxyBackend(client)
 	for _, rec := range records {
-		if err := PublishJSONRecord(ctx, client, outputRef, rec); err != nil {
+		if err := backend.PublishRecord(ctx, outputRef, rec); err != nil {
 			return err
 		}
 	}
@@ -78,14 +75,7 @@ func PublishJSONRecords(ctx context.Context, client *foundry.Client, outputRef f
 
 // PublishJSONRecord publishes one JSON object to stream-proxy.
 func PublishJSONRecord(ctx context.Context, client *foundry.Client, outputRef foundry.DatasetRef, record map[string]any) error {
-	branch := strings.TrimSpace(outputRef.Branch)
-	if branch == "" {
-		branch = "master"
-	}
-
-	return retryTransient(ctx, 8, 200*time.Millisecond, func() error {
-		return client.PublishStreamJSONRecord(ctx, outputRef.RID, branch, record)
-	})
+	return NewLegacyStreamProxyBackend(client).PublishRecord(ctx, outputRef, record)
 }
 
 // UploadDatasetCSV uploads CSV bytes to a dataset transaction and commits when appropriate.
@@ -96,7 +86,7 @@ func UploadDatasetCSV(ctx context.Context, client *foundry.Client, outputRef fou
 
 	var txnID string
 	createdTxn := true
-	err := retryTransient(ctx, 8, 200*time.Millisecond, func() error {
+	err := RetryTransient(ctx, DefaultRetryPolicy, func() error {
 		var err error
 		txnID, err = client.CreateTransaction(ctx, outputRef.RID, outputRef.Branch)
 		return err
@@ -108,7 +98,7 @@ func UploadDatasetCSV(ctx context.Context, client *foundry.Client, outputRef fou
 		createdTxn = false
 
 		var ok bool
-		err = retryTransient(ctx, 8, 200*time.Millisecond, func() error {
+		err = RetryTransient(ctx, DefaultRetryPolicy, func() error {
 			var err error
 			txnID, ok, err = client.FindLatestOpenTransaction(ctx, outputRef.RID)
 			return err
@@ -121,14 +111,14 @@ func UploadDatasetCSV(ctx context.Context, client *foundry.Client, outputRef fou
 		}
 	}
 
-	if err := retryTransient(ctx, 8, 200*time.Millisecond, func() error {
+	if err := RetryTransient(ctx, DefaultRetryPolicy, func() error {
 		return client.UploadFile(ctx, outputRef.RID, txnID, outputFilename, "application/octet-stream", csv)
 	}); err != nil {
 		return err
 	}
 
 	if createdTxn {
-		if err := retryTransient(ctx, 8, 200*time.Millisecond, func() error {
+		if err := RetryTransient(ctx, DefaultRetryPolicy, func() error {
 			return client.CommitTransaction(ctx, outputRef.RID, txnID)
 		}); err != nil {
 			return err
@@ -146,53 +136,4 @@ func isOpenTransactionAlreadyExists(err error) bool {
 		return false
 	}
 	return he.ErrorName == "OpenTransactionAlreadyExists" || he.ErrorCode == "CONFLICT"
-}
-
-func isTransient(err error) bool {
-	if err == nil {
-		return false
-	}
-	var he *foundry.HTTPError
-	if errors.As(err, &he) {
-		return he.StatusCode == 429 || he.StatusCode/100 == 5
-	}
-	if errors.Is(err, context.DeadlineExceeded) {
-		return true
-	}
-	var ne net.Error
-	if errors.As(err, &ne) {
-		return ne.Timeout() || ne.Temporary()
-	}
-	if errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.ECONNREFUSED) {
-		return true
-	}
-	return false
-}
-
-func retryTransient(ctx context.Context, attempts int, initialSleep time.Duration, f func() error) error {
-	sleep := initialSleep
-	var lastErr error
-	for i := 0; i < attempts; i++ {
-		if err := f(); err == nil {
-			return nil
-		} else {
-			lastErr = err
-			if !isTransient(err) || i == attempts-1 {
-				return err
-			}
-		}
-
-		t := time.NewTimer(sleep)
-		select {
-		case <-ctx.Done():
-			t.Stop()
-			return ctx.Err()
-		case <-t.C:
-		}
-		sleep *= 2
-		if sleep > 2*time.Second {
-			sleep = 2 * time.Second
-		}
-	}
-	return lastErr
 }

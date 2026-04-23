@@ -112,6 +112,7 @@ func RunFoundry(
 	if err != nil {
 		return err
 	}
+	streamBackend := foundryio.NewLegacyStreamProxyBackend(client)
 
 	readStart := time.Now()
 	emails, err := foundryio.ReadInputEmails(ctx, client, inputRef)
@@ -121,7 +122,7 @@ func RunFoundry(
 	logf("loaded %d emails from input dataset in %s", len(emails), time.Since(readStart).Round(time.Millisecond))
 
 	modeStart := time.Now()
-	isStream, err := foundryio.ResolveOutputMode(ctx, client, outputRef, outputWriteMode)
+	isStream, err := foundryio.ResolveOutputModeWithBackend(ctx, streamBackend, outputRef, outputWriteMode)
 	if err != nil {
 		return err
 	}
@@ -133,7 +134,7 @@ func RunFoundry(
 
 	enrichStart := time.Now()
 	if isStream {
-		existingByEmail, err := readExistingStreamRows(ctx, client, outputRef, logger, runID)
+		existingByEmail, err := readExistingStreamRows(ctx, streamBackend, outputRef, logger, runID)
 		if err != nil {
 			return err
 		}
@@ -184,7 +185,7 @@ func RunFoundry(
 			rec["written_at"] = writtenAt
 
 			publishStart := time.Now()
-			if err := foundryio.PublishJSONRecord(ctx, client, outputRef, rec); err != nil {
+			if err := streamBackend.PublishRecord(ctx, outputRef, rec); err != nil {
 				return err
 			}
 
@@ -267,7 +268,7 @@ func RunFoundry(
 
 func readExistingStreamRows(
 	ctx context.Context,
-	client *foundry.Client,
+	streamBackend foundryio.StreamBackend,
 	outputRef foundry.DatasetRef,
 	logger *log.Logger,
 	runID string,
@@ -277,7 +278,7 @@ func readExistingStreamRows(
 		branch = "master"
 	}
 
-	recs, err := client.ReadStreamRecords(ctx, outputRef.RID, branch)
+	recs, err := streamBackend.ReadRecords(ctx, outputRef)
 	if err != nil {
 		if isNotFoundError(err) {
 			logger.Printf("run=%s incremental: no prior stream snapshot found for %s@%s", runID, outputRef.RID, branch)
