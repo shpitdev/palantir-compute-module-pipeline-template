@@ -179,7 +179,7 @@ func RunFoundry(
 			)
 
 			writtenAt := time.Now().UTC().Format(time.RFC3339Nano)
-			rec := rowToStreamRecord(row)
+			rec := pipeline.RowToStreamRecord(row)
 			rec["run_id"] = runID
 			rec["written_at"] = writtenAt
 
@@ -297,7 +297,7 @@ func readExistingStreamRows(
 
 	out := make(map[string]pipeline.Row, len(recs))
 	for _, rec := range recs {
-		row := rowFromStreamRecord(normalizeStreamRecord(rec))
+		row := pipeline.RowFromStreamRecord(rec)
 		key := emailKey(row.Email)
 		if key == "" {
 			continue
@@ -311,73 +311,6 @@ func readExistingStreamRows(
 	}
 	logger.Printf("run=%s incremental: loaded %d prior stream rows from %s@%s", runID, len(out), outputRef.RID, branch)
 	return out, nil
-}
-
-func normalizeStreamRecord(rec map[string]any) map[string]any {
-	if rec == nil {
-		return nil
-	}
-	// Some stream-proxy responses wrap the actual record under a key.
-	for _, key := range []string{"record", "value", "data"} {
-		if inner, ok := rec[key].(map[string]any); ok {
-			return inner
-		}
-	}
-	return rec
-}
-
-func rowFromStreamRecord(rec map[string]any) pipeline.Row {
-	get := func(key string) string {
-		v, ok := rec[key]
-		if !ok || v == nil {
-			return ""
-		}
-		s, ok := v.(string)
-		if !ok {
-			return ""
-		}
-		return s
-	}
-
-	return pipeline.Row{
-		Email:            strings.TrimSpace(get("email")),
-		LinkedInURL:      get("linkedin_url"),
-		Company:          get("company"),
-		Title:            get("title"),
-		Description:      get("description"),
-		Confidence:       get("confidence"),
-		Status:           get("status"),
-		Error:            get("error"),
-		Model:            get("model"),
-		Sources:          get("sources"),
-		WebSearchQueries: get("web_search_queries"),
-	}
-}
-
-func rowToStreamRecord(r pipeline.Row) map[string]any {
-	// Use null for empty values so nullable string columns behave like "missing" rather than "".
-	rec := map[string]any{
-		"email": r.Email,
-	}
-	assignNullable(rec, "linkedin_url", r.LinkedInURL)
-	assignNullable(rec, "company", r.Company)
-	assignNullable(rec, "title", r.Title)
-	assignNullable(rec, "description", r.Description)
-	assignNullable(rec, "confidence", r.Confidence)
-	assignNullable(rec, "status", r.Status)
-	assignNullable(rec, "error", r.Error)
-	assignNullable(rec, "model", r.Model)
-	assignNullable(rec, "sources", r.Sources)
-	assignNullable(rec, "web_search_queries", r.WebSearchQueries)
-	return rec
-}
-
-func assignNullable(dst map[string]any, key string, value string) {
-	if strings.TrimSpace(value) == "" {
-		dst[key] = nil
-		return
-	}
-	dst[key] = value
 }
 
 type tracedEnricher struct {

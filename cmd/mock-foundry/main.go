@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/palantir/palantir-compute-module-pipeline-search/examples/email_enricher/pipeline"
 	"github.com/palantir/palantir-compute-module-pipeline-search/pkg/mockfoundry"
 )
 
@@ -24,6 +25,7 @@ func main() {
 	_ = fs.Parse(os.Args[1:])
 
 	srv := mockfoundry.New(inputDir, uploadDir)
+	srv.SetStreamReadTableHeader(pipeline.StreamTableHeader())
 	for _, rid := range splitCSV(streamRIDs) {
 		srv.CreateStream(rid)
 	}

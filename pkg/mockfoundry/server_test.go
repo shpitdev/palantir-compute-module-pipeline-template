@@ -3,10 +3,14 @@ package mockfoundry_test
 import (
 	"bytes"
 	"context"
+	"encoding/csv"
+	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
+	"github.com/palantir/palantir-compute-module-pipeline-search/examples/email_enricher/pipeline"
 	"github.com/palantir/palantir-compute-module-pipeline-search/pkg/foundry"
 	"github.com/palantir/palantir-compute-module-pipeline-search/pkg/mockfoundry"
 )
@@ -48,6 +52,59 @@ func TestMockFoundry_CommitUpdatesReadTable(t *testing.T) {
 	}
 	if !bytes.Equal(got, want) {
 		t.Fatalf("readTable output mismatch:\n--- got ---\n%s\n--- want ---\n%s\n", string(got), string(want))
+	}
+}
+
+func TestMockFoundry_StreamReadTableUsesConfiguredHeader(t *testing.T) {
+	t.Parallel()
+
+	inputDir := t.TempDir()
+	uploadDir := t.TempDir()
+
+	srv := mockfoundry.New(inputDir, uploadDir)
+	srv.SetStreamReadTableHeader(pipeline.StreamTableHeader())
+
+	rid := "ri.foundry.main.dataset.aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+	srv.CreateStream(rid)
+
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	client, err := foundry.NewClient(ts.URL+"/api", ts.URL+"/stream-proxy/api", "dummy-token", "")
+	if err != nil {
+		t.Fatalf("new foundry client: %v", err)
+	}
+
+	if err := client.PublishStreamJSONRecord(context.Background(), rid, "master", map[string]any{
+		"email":      "alice@example.com",
+		"company":    "Example",
+		"status":     "ok",
+		"run_id":     "run-123",
+		"written_at": "2026-04-23T00:00:00Z",
+	}); err != nil {
+		t.Fatalf("publish stream record: %v", err)
+	}
+
+	resp, err := http.Get(ts.URL + "/api/v2/datasets/" + rid + "/readTable?branchName=master")
+	if err != nil {
+		t.Fatalf("read stream readTable: %v", err)
+	}
+	defer func() {
+		_ = resp.Body.Close()
+	}()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d want 200", resp.StatusCode)
+	}
+
+	records, err := csv.NewReader(resp.Body).ReadAll()
+	if err != nil {
+		t.Fatalf("parse csv: %v", err)
+	}
+	if len(records) != 2 {
+		t.Fatalf("expected header + row, got %d records", len(records))
+	}
+	if !slices.Equal(records[0], pipeline.StreamTableHeader()) {
+		t.Fatalf("header mismatch: got %#v want %#v", records[0], pipeline.StreamTableHeader())
 	}
 }
 
