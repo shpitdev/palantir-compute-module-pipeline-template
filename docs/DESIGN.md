@@ -47,7 +47,7 @@ Foundry pipeline-mode containers are provided file paths via environment variabl
 Service discovery:
 
 - `FOUNDRY_SERVICE_DISCOVERY_V2`: file path containing Foundry service base URLs. The code reads `api_gateway` for dataset APIs and `stream_proxy` for stream APIs.
-- `FOUNDRY_URL`: optional local/back-compat fallback when service discovery is not available.
+- `FOUNDRY_URL`: optional local-dev shorthand when service discovery is not available.
 
 Additional configuration this module expects:
 

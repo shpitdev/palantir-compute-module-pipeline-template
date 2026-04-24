@@ -59,7 +59,7 @@ func loadServicesFromEnv() (Services, error) {
 		return loadServicesFromDiscoveryFile(p)
 	}
 
-	// Back-compat: allow explicit FOUNDRY_URL when service discovery is not present.
+	// Local dev shorthand: allow explicit FOUNDRY_URL when service discovery is not present.
 	foundryURL := strings.TrimSpace(os.Getenv("FOUNDRY_URL"))
 	if foundryURL == "" {
 		return Services{}, fmt.Errorf("FOUNDRY_SERVICE_DISCOVERY_V2 or FOUNDRY_URL is required")

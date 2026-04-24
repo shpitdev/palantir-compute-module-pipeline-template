@@ -155,10 +155,6 @@ It supports:
   - `POST /api/v2/datasets/{rid}/files/{filePath...}/upload?transactionRid={txn}` (upload file into txn)
   - `POST /api/v2/datasets/{rid}/transactions/{txn}/commit` (commit txn)
 
-- Dataset API (v1, minimal/back-compat)
-  - `GET /api/v1/datasets/{rid}/readTable`
-  - `PUT /api/v1/datasets/{rid}/transactions/{txn}/files/{path...}`
-
 - Stream-proxy API (optional; only for stream RIDs registered via `MOCK_FOUNDRY_STREAM_RIDS`)
   - `GET  /stream-proxy/api/streams/{rid}/branches/{branch}/records`
   - `POST /stream-proxy/api/streams/{rid}/branches/{branch}/jsonRecord`

@@ -164,11 +164,11 @@ This repo’s runtime contract is:
 
 - `api_gateway` resolves dataset/general Foundry API calls
 - `stream_proxy` resolves stream/high-scale calls
-- fallback `FOUNDRY_URL` may be supported locally, but is a convenience path, not the primary platform contract
+- `FOUNDRY_URL` may be supported locally as a development shorthand, but it is not the primary platform contract
 
 ### Cleanup implication
 
-The parity doc and code should make clear that `FOUNDRY_URL` is a back-compat/local convenience, while service discovery is the primary Foundry-native contract.
+The parity doc and code should make clear that service discovery is the primary Foundry-native contract.
 
 ---
 
@@ -330,7 +330,7 @@ The repo relies on `readTable`.
 
 Official SDKs confirm parameters including:
 
-- `branchName` / older `branchId`
+- `branchName`
 - `startTransactionRid`
 - `endTransactionRid`
 - `format`
