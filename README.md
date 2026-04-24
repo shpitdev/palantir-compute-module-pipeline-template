@@ -1,95 +1,35 @@
-# palantir-compute-module-pipeline-search
+# Foundry Compute Module Go Template
 
-<!-- Release & CI -->
-[![Release](https://img.shields.io/github/v/tag/anand-testcompare/palantir-compute-module-pipeline-search?sort=semver&label=release)](https://github.com/anand-testcompare/palantir-compute-module-pipeline-search/releases)
-[![Foundry Publish](https://github.com/anand-testcompare/palantir-compute-module-pipeline-search/actions/workflows/publish-foundry.yml/badge.svg?branch=main)](https://github.com/anand-testcompare/palantir-compute-module-pipeline-search/actions/workflows/publish-foundry.yml)
-[![Release Automation](https://github.com/anand-testcompare/palantir-compute-module-pipeline-search/actions/workflows/release-version.yml/badge.svg?branch=main)](https://github.com/anand-testcompare/palantir-compute-module-pipeline-search/actions/workflows/release-version.yml)
+[![Release](https://img.shields.io/github/v/tag/shpitdev/palantir-compute-module-pipeline-template?sort=semver&label=release)](https://github.com/shpitdev/palantir-compute-module-pipeline-template/releases)
+[![CI](https://github.com/shpitdev/palantir-compute-module-pipeline-template/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/shpitdev/palantir-compute-module-pipeline-template/actions/workflows/ci.yml)
+[![Release Automation](https://github.com/shpitdev/palantir-compute-module-pipeline-template/actions/workflows/release-version.yml/badge.svg?branch=main)](https://github.com/shpitdev/palantir-compute-module-pipeline-template/actions/workflows/release-version.yml)
 
-<!-- Core stack -->
-[![Go](https://img.shields.io/badge/Go-1.25.8-00ADD8?logo=go&logoColor=white)](https://go.dev/doc/)
-[![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white)](https://docs.docker.com/compose/)
-[![Palantir Foundry](https://img.shields.io/badge/Palantir_Foundry-Compute_Module-0B74DE)](https://www.palantir.com/platforms/foundry/)
-[![Gemini](https://img.shields.io/badge/Google_Gemini-API-4285F4?logo=google&logoColor=white)](https://ai.google.dev/)
-[![Mermaid](https://img.shields.io/badge/Mermaid-Diagrams-FF3670?logo=mermaid&logoColor=white)](https://mermaid.js.org/)
+A local-first Go template and toolkit for pipeline-mode Palantir Foundry Compute Modules.
 
-Pipeline-mode Foundry Compute Module (Go) that:
+The repo contains two things:
 
-1. Reads a dataset of email addresses
-2. Enriches each email via Gemini (grounding + URL context + structured output)
-3. Writes enriched rows to either:
-   - a snapshot dataset (transactions), or
-   - a streaming dataset (stream-proxy)
+1. A reusable Go kit for reading Foundry inputs, processing rows, and writing dataset or stream outputs.
+2. `foundry-cmgo`, a CLI that scaffolds new compute-module projects and runs a Foundry-like local loop with mock Foundry APIs plus a real Docker container parity check.
 
-Local-first workflow: iterate locally (mock Foundry APIs + real container) and deploy the same image into Foundry.
+The included example enriches email rows with Gemini, but the durable product surface is the compute-module kit and CLI workflow.
 
-Note: compute modules run as long-lived containers. This module runs the pipeline once per container start and then keeps the process alive so the platform does not restart it (which would re-run the pipeline and can duplicate stream outputs).
+## Quickstart: generate and validate a module
 
-## Repo Layout
-
-This repo is split into reusable kit packages and an example module:
-
-- `pkg/pipeline/...`: reusable pipeline primitives (worker, local/foundry IO adapters, schema contract)
-- `pkg/foundry/...`: Foundry env parsing and HTTP client
-- `pkg/mockfoundry/...`: emulated Foundry server used by local harnesses and tests
-- `examples/email_enricher/...`: example email enrichment domain logic and output mapping
-- `cmd/enricher`: example binary wiring the kit + example
-- `cmd/foundry-cmgo`: bootstrap, preview/build, and local mock-data seeding CLI
-
-External-consumer contracts are validated in:
-
-- `test/consumer`: imports reusable packages directly
-- `test/template`: minimal new-module skeleton using pipeline kit APIs
-
-## Development
-
-Canonical entrypoint:
-
-```bash
-./dev help
-```
-
-Verify (CI parity + external consumer checks):
-
-```bash
-./dev verify
-```
-
-Real e2e test run (Gemini + Foundry-emulated docker-compose):
-
-```bash
-./dev test
-```
-
-`./dev test` performs real Gemini calls and fails if committed output contains any `status=error` rows.
-
-Preflight diagnostics:
-
-```bash
-./dev doctor
-./dev doctor --json
-```
-
-### DevX CLI
-
-`foundry-cmgo` keeps project generation and local Foundry-like preview/build ergonomics in Go instead of adding more shell branches. It can generate `minimal`, `dataset`, or `stream` starter repos.
-
-Install the CLI for use outside this checkout:
+Install the CLI from this checkout:
 
 ```bash
 ./install.sh
 ```
 
-That installs two commands into `~/.local/bin` by default:
-
-- `foundry-cmgo`: a built binary from the current checkout
-- `foundry-cmgo-dev`: a checkout-linked shim that rebuilds and runs the latest source from this checkout
-
-Use `./install-dev.sh` when you only want to refresh the dev shim. Both installers accept `--install-dir PATH` and `--no-shell-update`.
-
-Generate a starter repo, then use the first-class local Foundry loop:
+Generate a starter and run the local Foundry loop:
 
 ```bash
-foundry-cmgo new --name my-module --module github.com/acme/my-module --dir /tmp/my-module --example dataset
+foundry-cmgo new \
+  --name my-module \
+  --module github.com/acme/my-module \
+  --dir /tmp/my-module \
+  --example dataset
+
 cd /tmp/my-module
 go test ./...
 foundry-cmgo preview --rows 20
@@ -99,21 +39,14 @@ foundry-cmgo inspect config
 foundry-cmgo inspect outputs
 ```
 
-`preview` starts an in-process mock Foundry server, samples the configured input CSV (default 1000 rows), runs the generated `cmd/compute-module foundry` path with `FOUNDRY_URL`, `BUILD2_TOKEN`, and `RESOURCE_ALIAS_MAP`, then prints a compact output table. `build` intentionally builds and runs the generated Docker container by default so container-only Foundry issues are caught before publishing; use `foundry-cmgo build --container=false` or `foundry-cmgo build --local-process` for the faster host-process path. Build uses the full input and writes committed local output under `.local/mock-foundry/` for dataset mode or run-local JSONL records for stream mode.
+Command intent:
 
-`inspect last --json` returns the persisted `.local/foundry-cmgo/last-run.json` manifest. `inspect config` shows resolved config values (including inferred defaults), and `inspect outputs` shows the last dataset CSV or stream JSONL artifact, row/record count, state dir, run log, and Docker network strategy.
+- `new` creates a minimal, dataset, or stream compute-module starter.
+- `preview` samples configured local CSV input and runs the module as a host process against an in-process mock Foundry server.
+- `build` builds and runs the generated Docker image by default, using full input, so container-only issues show up before publishing.
+- `inspect` shows resolved config, last-run metadata, output artifacts, logs, row/record counts, and Docker network strategy.
 
-Regression-check the generated starter workflow with:
-
-```bash
-./dev verify foundry-cmgo
-```
-
-That builds the current `foundry-cmgo` binary once, generates fresh dataset and stream starters with `--local-replace`, then runs `go test ./...`, `preview`, default Docker `build`, and `inspect` commands in both generated projects.
-
-See [`docs/foundry-cmgo-cli-output-captures.md`](docs/foundry-cmgo-cli-output-captures.md) for deterministic output captures from fresh dataset and stream starters.
-
-Generated dataset/stream starters include `foundry-cmgo.yaml`:
+Generated dataset/stream projects include `foundry-cmgo.yaml`:
 
 ```yaml
 version: 1
@@ -133,140 +66,90 @@ preview:
   strategy: sampled
 ```
 
-Advanced/debug: seed local mock Foundry inputs from CSV when driving a separate mock server or Docker Compose harness:
+For deterministic terminal captures of the CLI happy path, see [`docs/devx/foundry-cmgo-cli-output-captures.md`](docs/devx/foundry-cmgo-cli-output-captures.md).
+
+## Working in this repo
+
+Canonical entrypoint:
 
 ```bash
-foundry-cmgo seed dataset --csv ./emails.csv --alias-map test/fixtures/alias-map.json --alias input
+./dev help
 ```
 
-Advanced/debug: publish CSV rows into a running mock stream:
+Core checks:
 
 ```bash
-# terminal 1
-go run ./cmd/mock-foundry --addr :8080 --stream-rids ri.foundry.main.dataset.22222222-2222-2222-2222-222222222222
-
-# terminal 2
-foundry-cmgo seed stream --csv ./records.csv --alias-map test/fixtures/alias-map.json --alias output --url http://localhost:8080
+./dev verify                  # format, license, lint, tests, consumer checks, devx smoke checks
+./dev verify foundry-cmgo     # fresh generated dataset + stream starter workflows
+./dev test                    # Gemini + docker-compose E2E when secrets are configured
 ```
 
-Run locally (no Foundry required, Gemini required):
+`./dev test` performs real Gemini calls and fails if committed output contains `status=error` rows. CI skips Gemini-dependent jobs when the required secrets are absent.
+
+Local email-enricher paths:
 
 ```bash
 export GEMINI_API_KEY=...
 ./dev run local -- --input /path/to/emails.csv --output /path/to/enriched.csv
-```
-
-`GEMINI_MODEL` is optional; default is `gemini-2.5-flash`.
-
-Run Foundry-like flow locally (mock dataset API + real Gemini + real container):
-
-```bash
 ./dev run foundry-emulated
-```
-
-Run a long-lived local dev loop (watches input CSV and reruns automatically):
-
-```bash
 ./dev run foundry-emulated --watch
 ```
 
-`./dev run foundry-emulated --watch` starts a tight local loop:
+The watch loop starts mock Foundry plus a real container, reruns on input CSV edits, and writes committed local output under `.local/mock-foundry/uploads/...`.
 
-- starts mock-foundry + a real container
-- runs once immediately, then reruns on input CSV edits
-- reuses prior `status=ok` rows by `email` (best-effort incremental cache)
-- stops cleanly on `Ctrl+C`
-
-### Local Watch Loop Quickstart
-
-1. Set a valid Gemini key in `.env`:
-
-```bash
-GEMINI_API_KEY=...
-# GEMINI_MODEL is optional (default: gemini-2.5-flash)
-```
-
-2. Edit input rows in:
-
-```bash
-.local/mock-foundry/inputs/ri.foundry.main.dataset.11111111-1111-1111-1111-111111111111.csv
-```
-
-3. Start the local loop:
-
-```bash
-./dev run foundry-emulated --watch
-```
-
-4. Read latest committed output at:
-
-```bash
-.local/mock-foundry/uploads/ri.foundry.main.dataset.22222222-2222-2222-2222-222222222222/_branches/master/_committed/readTable.csv
-```
-
-5. Change and save the input CSV again to trigger another run.
-
-Reset local compose state and clear mock-foundry uploads (inputs are preserved):
+Reset local compose/mock output state while preserving inputs:
 
 ```bash
 ./dev clean
 ```
 
-See `docker-compose.local.yml` for fixture mounts and output paths.
+## Repository layout
 
-Run CI-style docker-compose E2E (fixed fixtures + output validation):
+- `cmd/foundry-cmgo`: scaffold, preview, build, inspect, and mock-data seeding CLI.
+- `cmd/enricher`: example compute-module binary that wires the kit to the email-enricher example.
+- `pkg/pipeline/...`: reusable worker, schema, local IO, and Foundry IO primitives.
+- `pkg/foundry/...`: Foundry environment parsing and HTTP client helpers.
+- `pkg/mockfoundry/...`: local mock Foundry API used by preview/build/tests.
+- `examples/email_enricher/...`: example domain logic and output mapping.
+- `internal/devx/...`: generated-project templates and local preview/build orchestration.
+- `test/consumer`: external package import contract tests.
+- `test/template`: minimal generated-style module used for compatibility tests.
 
-```bash
-export GEMINI_API_KEY=...
-./dev test -v
-```
+## Documentation
 
-Note: CI jobs that require Gemini secrets are skipped automatically if `GEMINI_API_KEY` / `GEMINI_MODEL` GitHub secrets are not configured.
+Start with [`docs/README.md`](docs/README.md) for the docs map.
 
-## Docs
+High-signal docs:
 
-- `docs/DESIGN.md`: architecture, interfaces, local testing approach
-- `docs/FOUNDRY_PARITY.md`: explicit Foundry behavior contract, evidence, and remaining parity gaps
-- `docs/RELEASE.md`: Foundry configuration steps (Sources, egress, probes) and publishing guidance
-- `docs/TROUBLESHOOTING.md`: common deployment failures and diagnosis
-- `docs/DIAGRAMS.md`: Mermaid sequence diagrams + flowcharts for API usage scenarios
+- [`docs/DESIGN.md`](docs/DESIGN.md): architecture, runtime modes, and local tooling.
+- [`docs/FOUNDRY_PARITY.md`](docs/FOUNDRY_PARITY.md): explicit local-vs-Foundry behavior contract.
+- [`docs/RELEASE.md`](docs/RELEASE.md): Foundry configuration, Sources, egress, probes, and publishing notes.
+- [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md): common deployment and local harness failures.
+- [`docs/DIAGRAMS.md`](docs/DIAGRAMS.md): Mermaid diagrams for dataset and stream flows.
+- [`docs/use-cases/milwaukee-resolution.md`](docs/use-cases/milwaukee-resolution.md): real-data deterministic catalog-resolution dogfood case.
 
-## Defaults (high-signal)
+## Foundry deployment note
 
-Defaults differ between:
+This repo is public. Do not commit real Foundry URLs, dataset RIDs, tokens, Source credentials, or API keys.
 
-- binary internal fallbacks (used when env vars are unset in Foundry)
-- local docker-compose harness defaults in `docker-compose.local.yml`
-
-Key ones:
-
-- `REQUEST_TIMEOUT`: `30s` binary fallback; local compose sets `2m`
-- `WORKERS`: `10`
-- `MAX_RETRIES`: `3`
-- `FAIL_FAST`: `false`
-
-For the full set of options and Foundry configuration, see `docs/RELEASE.md`.
+Publishing to a Foundry registry requires repository secrets for the target stack. A failed `publish-foundry` run at registry login means credentials are missing or unauthorized; it is not evidence that the local template workflow is broken.
 
 ## Screenshots
 
-Put Foundry UI screenshots in `docs/screenshots/` and reference them from this README.
+Foundry UI screenshots live under [`docs/screenshots/`](docs/screenshots/).
 
-- Convention: `docs/screenshots/<short-topic>-<yyyy-mm-dd>.png`
-
-Current screenshots:
-
-Compute module configuration (pipelines mode, sources + env vars):
+Compute module configuration:
 
 ![Foundry compute module configuration](docs/screenshots/foundry-compute-module-configure-2026-02-15.png)
 
-Lineage overview (inputs, sources, egress, output):
+Lineage overview:
 
 ![Foundry data lineage view](docs/screenshots/foundry-data-lineage-2026-02-15.png)
 
-Streaming dataset current transaction view:
+Streaming transaction view:
 
 ![Foundry stream current transaction view](docs/screenshots/foundry-stream-transaction-view-2026-02-15.png)
 
-Streaming dataset metrics:
+Streaming metrics:
 
 ![Foundry stream metrics](docs/screenshots/foundry-stream-metrics-2026-02-15.png)
