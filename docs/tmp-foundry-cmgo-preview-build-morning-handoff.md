@@ -125,46 +125,67 @@ Both starter flows passed in this Linux/Docker environment.
    - Stream build writes records under `.local/foundry-cmgo/builds/<run-id>/streams/<rid>/<branch>/records.jsonl`.
    - Mock stream history is not durable across processes yet.
 
-7. `doctor`, richer `inspect`, and `preview --watch` are not implemented.
+7. A broad `doctor` command is intentionally not the next recommendation.
+   - The valuable part is command-scoped preflight: fail early inside `preview`/`build` when config, input files, Docker, or network reachability are missing.
+   - Foundry-specific image policy checks are lower value here because this CLI creates the Dockerfile template. If those checks become durable policy, they likely belong in a generic Foundry CLI/linter rather than this generated-project helper.
    - Seed commands are still present as advanced/debug plumbing.
 
 8. Prefer installed `foundry-cmgo` or `scripts/foundry-cmgo-dev` for outside-repo testing.
    - Running `go run /path/to/repo/cmd/foundry-cmgo` from inside a generated module can pull CLI dependencies into the generated module context and produce confusing `go.sum` noise.
 
-## What I think is next
+## What I think is next (revised after grooming)
 
-Highest-value next slice:
+Updated stance: do **not** start with a broad `doctor` command. Doctors are usually low-value when the same command can validate its own prerequisites and fail clearly. They become more useful when there is real drift: old generated projects, external platform rules changing, or user-managed config that may be stale. For this repo, most checks should be early, explicit preflight inside the command that needs them.
 
-1. Add `foundry-cmgo doctor project` and `foundry-cmgo doctor docker`.
-   - Check config exists and references real files.
-   - Check Dockerfile has no Alpine runtime, has CA certs, has `linux/amd64`, and has numeric non-root user.
-   - Check Docker availability and whether host networking works; if not, print the expected fallback/flag.
+Highest-value next slices:
 
-2. Split `internal/devx/run.go` after tests lock behavior.
+1. Split `internal/devx/run.go` after tests lock behavior.
+   - This is the clearest maintainability win.
    - Suggested files:
      - `run.go` for public orchestration entrypoints/types.
      - `runtime_mock.go` for mock Foundry server lifecycle.
      - `runtime_docker.go` for Docker build/run and local-replace context prep.
      - `output.go` for dataset/stream output reading and rendering data prep.
      - `manifest.go` for last-run persistence.
+   - Keep behavior unchanged during this pass.
 
-3. Add a Docker-network portability fallback.
-   - Try host networking on Linux.
-   - Fall back to `host.docker.internal` where supported.
-   - Make failures actionable: name Docker/network issue and suggest `--local-process` only as a temporary escape hatch.
-
-4. Add a scripted generated-starter verification target.
+2. Add a scripted generated-starter verification target.
    - One command that generates dataset + stream starters and runs preview/build/inspect.
    - This should become the confidence check before touching DevX CLI behavior again.
+   - This is more valuable than `doctor` because it proves the actual path users run.
 
-5. Expand `inspect`.
+3. Expand `inspect`.
    - `inspect outputs`: list known outputs and paths.
    - `inspect config`: show resolved config/defaults.
+   - `inspect last --json` may be useful for agents/tests if not already enough.
    - Keep this lightweight before any TUI work.
 
-6. Only after the above, consider `preview --watch`.
+4. Replace the broad doctor idea with command-scoped preflight and sharper errors.
+   - In `preview`: check config parse, input CSV exists/readable, module command exists enough to execute, and output mode is valid before doing expensive work.
+   - In `build`: check Docker CLI availability, Docker daemon availability, Dockerfile exists, required run state files are readable by the container user, and mock Foundry reachability from the chosen container network path.
+   - These checks should happen as part of `preview`/`build`, not behind a separate command users must remember.
+   - If a check fails, the error should name the missing requirement and the command/flag to move forward, e.g. `install Docker`, `start Docker`, `use --local-process temporarily`, or `fix foundry-cmgo.yaml inputs[0].path`.
+
+5. Re-evaluate Docker networking portability with evidence before implementing a fallback.
+   - Current Linux path uses `docker run --network host` and works here.
+   - Unknown: Docker Desktop / macOS behavior for host networking and `host.docker.internal`.
+   - Recommended next action is a small compatibility probe/design note, not a speculative abstraction.
+   - If fallback is needed, prefer encapsulating it in `runtime_docker.go` and testing the selected mock Foundry URL before running the module.
+
+6. Treat stream JSONL output as acceptable indefinitely unless a real use case says otherwise.
+   - Dataset output has a natural committed CSV path in mock Foundry state.
+   - Stream output is append/event-shaped; run-local JSONL is a reasonable inspectable artifact.
+   - Do not force stream durability parity unless users need cross-run stream replay or inspect history.
+
+7. Only after the above, consider `preview --watch`.
    - Keep it simple: rerun on save, one process at a time, clear Ctrl-C cleanup.
    - Do not start with Bubble Tea.
+
+Deferred / likely not worth doing here:
+
+- A standalone `doctor docker` that re-checks the Dockerfile policy this CLI generated itself.
+- Foundry-policy linting that tries to become the source of truth for platform container rules. If that is needed, it should likely live in a generic Foundry CLI/linter rather than this project-specific DevX helper.
+- A TUI before the CLI summary/table path proves insufficient.
 
 ## Last local sync actions
 
