@@ -28,5 +28,29 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
+inject_local_replace_for_new() {
+  if (($# == 0)); then
+    return
+  fi
+
+  if [[ "${1:-}" != "new" ]]; then
+    printf '%s\0' "$@"
+    return
+  fi
+
+  local arg
+  for arg in "$@"; do
+    case "$arg" in
+      --local-replace|--local-replace=*)
+        printf '%s\0' "$@"
+        return
+        ;;
+    esac
+  done
+
+  printf '%s\0' "$@" --local-replace "$REPO_ROOT"
+}
+
 go -C "$REPO_ROOT" build -trimpath -o "$TMP_BIN" ./cmd/foundry-cmgo
-"$TMP_BIN" "$@"
+mapfile -d '' -t forwarded_args < <(inject_local_replace_for_new "$@")
+"$TMP_BIN" "${forwarded_args[@]}"
