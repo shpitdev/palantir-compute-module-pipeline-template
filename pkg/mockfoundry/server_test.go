@@ -280,6 +280,56 @@ func TestMockFoundry_MissingDatasetViewIsDistinctFromAuthFailure(t *testing.T) {
 	}
 }
 
+func TestMockFoundry_RejectsRemovedCompatibilitySurfaces(t *testing.T) {
+	t.Parallel()
+
+	inputDir := t.TempDir()
+	uploadDir := t.TempDir()
+
+	srv := mockfoundry.New(inputDir, uploadDir)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	ctx := context.Background()
+	client, err := foundry.NewClient(ts.URL+"/api", ts.URL+"/stream-proxy/api", "dummy-token", "")
+	if err != nil {
+		t.Fatalf("new foundry client: %v", err)
+	}
+	datasetRID := "ri.foundry.main.dataset.91919191-9191-9191-9191-919191919191"
+
+	resp, err := http.Get(ts.URL + "/api/v1/datasets/" + datasetRID + "/readTable")
+	if err != nil {
+		t.Fatalf("read v1 endpoint: %v", err)
+	}
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("v1 readTable status=%d want 404", resp.StatusCode)
+	}
+	_ = resp.Body.Close()
+
+	txnID, err := client.CreateTransaction(ctx, datasetRID, "master")
+	if err != nil {
+		t.Fatalf("create transaction: %v", err)
+	}
+
+	resp, err = http.Post(ts.URL+"/api/v2/datasets/"+datasetRID+"/files/enriched.csv/upload?transactionId="+txnID, "text/csv", strings.NewReader("email\nalice@example.com\n"))
+	if err != nil {
+		t.Fatalf("upload using transactionId: %v", err)
+	}
+	assertAPIError(t, resp, http.StatusBadRequest, "UnsupportedQueryParameter")
+
+	resp, err = http.Post(ts.URL+"/api/v2/datasets/"+datasetRID+"/transactions?branchId=feature", "application/json", strings.NewReader(`{"transactionType":"SNAPSHOT"}`))
+	if err != nil {
+		t.Fatalf("create transaction using branchId: %v", err)
+	}
+	assertAPIError(t, resp, http.StatusBadRequest, "UnsupportedQueryParameter")
+
+	resp, err = http.Get(ts.URL + "/api/v2/datasets/" + datasetRID + "/readTable?branchId=feature")
+	if err != nil {
+		t.Fatalf("readTable using branchId: %v", err)
+	}
+	assertAPIError(t, resp, http.StatusBadRequest, "UnsupportedQueryParameter")
+}
+
 func createUploadCommit(t *testing.T, ctx context.Context, client *foundry.Client, datasetRID, branch, filePath string, csvBytes []byte) string {
 	t.Helper()
 	txnID, err := client.CreateTransaction(ctx, datasetRID, branch)
@@ -293,6 +343,25 @@ func createUploadCommit(t *testing.T, ctx context.Context, client *foundry.Clien
 		t.Fatalf("commit transaction branch=%q txn=%q: %v", branch, txnID, err)
 	}
 	return txnID
+}
+
+func assertAPIError(t *testing.T, resp *http.Response, wantStatus int, wantErrorName string) {
+	t.Helper()
+	defer func() {
+		_ = resp.Body.Close()
+	}()
+	if resp.StatusCode != wantStatus {
+		t.Fatalf("status=%d want %d", resp.StatusCode, wantStatus)
+	}
+	var body struct {
+		ErrorName string `json:"errorName"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode error body: %v", err)
+	}
+	if body.ErrorName != wantErrorName {
+		t.Fatalf("errorName=%q want %q", body.ErrorName, wantErrorName)
+	}
 }
 
 func TestMockFoundry_StreamReadTableUsesConfiguredHeader(t *testing.T) {

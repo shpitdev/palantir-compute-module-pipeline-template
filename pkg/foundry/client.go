@@ -29,7 +29,6 @@ type Client struct {
 
 type branchResponse struct {
 	Name           string `json:"name"`
-	BranchID       string `json:"branchId"`
 	TransactionRID string `json:"transactionRid"`
 }
 
@@ -166,7 +165,6 @@ func (c *Client) ReadTableCSV(ctx context.Context, datasetRID, branch string) ([
 	}
 
 	q := url.Values{}
-	// Dataset API v2 uses branchName; branchId is accepted by some older APIs.
 	q.Set("branchName", branch)
 	if strings.TrimSpace(txnRID) != "" {
 		q.Set("startTransactionRid", txnRID)
@@ -412,11 +410,7 @@ type createTxnRequest struct {
 }
 
 type createTxnResponse struct {
-	// Foundry returns a Transaction object with a transaction RID.
 	RID string `json:"rid"`
-
-	// Legacy: some mocks may return transactionId.
-	TransactionID string `json:"transactionId"`
 }
 
 // CreateTransaction creates a dataset transaction and returns the transaction id.
@@ -462,10 +456,7 @@ func (c *Client) CreateTransaction(ctx context.Context, datasetRID, branch strin
 		return "", fmt.Errorf("parse create transaction response: %w", err)
 	}
 
-	txnID := strings.TrimSpace(out.TransactionID)
-	if txnID == "" {
-		txnID = strings.TrimSpace(out.RID)
-	}
+	txnID := strings.TrimSpace(out.RID)
 	if txnID == "" {
 		return "", fmt.Errorf("create transaction response missing rid")
 	}

@@ -25,7 +25,7 @@ You must provide (via compute module configuration):
 
 - `GEMINI_MODEL`: Gemini model name (do not hardcode in code; configure per environment)
 
-`FOUNDRY_URL` remains supported as a local/back-compat fallback when service discovery is unavailable.
+`FOUNDRY_URL` remains supported as a local-dev shorthand when service discovery is unavailable.
 
 Gemini API key (recommended: Foundry Sources):
 
@@ -85,7 +85,7 @@ At minimum, expect to allowlist:
 Confirm exact domains from the client library / runtime behavior before locking the policy.
 
 In addition, if your module calls Foundry REST APIs (this repo does), you should plan to allow access to the Foundry service hosts
-resolved by `FOUNDRY_SERVICE_DISCOVERY_V2` (or the `FOUNDRY_URL` fallback in local/back-compat environments). This does not mean
+resolved by `FOUNDRY_SERVICE_DISCOVERY_V2` (or the `FOUNDRY_URL` shorthand in local development). This does not mean
 "leaving Foundry"; it is simply allowing the container to make HTTPS requests to the stack's API gateway and stream-proxy.
 
 Practical pattern:

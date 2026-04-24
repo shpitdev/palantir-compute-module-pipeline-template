@@ -160,7 +160,6 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/__debug/calls", s.handleDebugCalls)
 	mux.HandleFunc("/__debug/uploads", s.handleDebugUploads)
 	mux.HandleFunc("/__debug/streams", s.handleDebugStreams)
-	mux.HandleFunc("/api/v1/datasets/", s.handleV1Datasets)
 	mux.HandleFunc("/api/v2/datasets/", s.handleV2Datasets)
 	mux.HandleFunc("/stream-proxy/api/streams/", s.handleStreamProxy)
 	return mux
@@ -366,63 +365,6 @@ func (s *Server) handleStreamProxy(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (s *Server) handleV1Datasets(w http.ResponseWriter, r *http.Request) {
-	s.recordCall(r)
-	if !s.authorize(w, r) {
-		return
-	}
-
-	// /api/v1/datasets/{rid}/readTable
-	// /api/v1/datasets/{rid}/transactions/{txn}/files/{path...}
-	rest := strings.TrimPrefix(r.URL.Path, "/api/v1/datasets/")
-	parts := strings.Split(rest, "/")
-	if len(parts) < 2 {
-		http.NotFound(w, r)
-		return
-	}
-	rid := parts[0]
-	if !isSafeToken(rid) {
-		writeAPIError(w, http.StatusBadRequest, "Conjure:InvalidArgument", "INVALID_ARGUMENT", map[string]any{
-			"datasetRid": rid,
-		})
-		return
-	}
-
-	if len(parts) == 2 && parts[1] == "readTable" {
-		if r.Method != http.MethodGet {
-			w.WriteHeader(http.StatusMethodNotAllowed)
-			return
-		}
-		s.serveReadTableCSV(w, r, rid)
-		return
-	}
-
-	if len(parts) >= 5 && parts[1] == "transactions" && parts[3] == "files" {
-		if r.Method != http.MethodPut {
-			w.WriteHeader(http.StatusMethodNotAllowed)
-			return
-		}
-		txnID := parts[2]
-		if !isSafeToken(txnID) {
-			writeAPIError(w, http.StatusBadRequest, "Conjure:InvalidArgument", "INVALID_ARGUMENT", map[string]any{
-				"transactionRid": txnID,
-			})
-			return
-		}
-		filePath := strings.Join(parts[4:], "/")
-		if !isSafeFilePath(filePath) {
-			writeAPIError(w, http.StatusBadRequest, "InvalidFilePath", "INVALID_ARGUMENT", map[string]any{
-				"filePath": filePath,
-			})
-			return
-		}
-		s.handleUpload(w, r, rid, txnID, filePath)
-		return
-	}
-
-	http.NotFound(w, r)
-}
-
 func (s *Server) handleV2Datasets(w http.ResponseWriter, r *http.Request) {
 	s.recordCall(r)
 	if !s.authorize(w, r) {
@@ -465,6 +407,9 @@ func (s *Server) handleV2Datasets(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
 		}
+		if rejectUnsupportedQueryParam(w, r, "branchId") {
+			return
+		}
 		s.serveReadTableCSV(w, r, rid)
 		return
 	}
@@ -504,8 +449,8 @@ func (s *Server) handleV2Datasets(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		txnID := strings.TrimSpace(r.URL.Query().Get("transactionRid"))
-		if txnID == "" {
-			txnID = strings.TrimSpace(r.URL.Query().Get("transactionId"))
+		if rejectUnsupportedQueryParam(w, r, "transactionId") {
+			return
 		}
 		if txnID == "" || !isSafeToken(txnID) {
 			writeAPIError(w, http.StatusBadRequest, "Conjure:InvalidArgument", "INVALID_ARGUMENT", map[string]any{
@@ -796,6 +741,10 @@ func (s *Server) handleListTransactions(w http.ResponseWriter, r *http.Request, 
 }
 
 func (s *Server) handleCreateTransaction(w http.ResponseWriter, r *http.Request, datasetRID string) {
+	if rejectUnsupportedQueryParam(w, r, "branchId") {
+		return
+	}
+
 	var req createTxnReq
 	if r.Body != nil {
 		b, _ := io.ReadAll(r.Body)
@@ -818,9 +767,6 @@ func (s *Server) handleCreateTransaction(w http.ResponseWriter, r *http.Request,
 	s.mu.Lock()
 	branch := normalizeBranch(r.URL.Query().Get("branchName"))
 	if strings.TrimSpace(r.URL.Query().Get("branchName")) == "" {
-		branch = normalizeBranch(r.URL.Query().Get("branchId"))
-	}
-	if strings.TrimSpace(r.URL.Query().Get("branchName")) == "" && strings.TrimSpace(r.URL.Query().Get("branchId")) == "" {
 		branch = normalizeBranch(req.Branch)
 	}
 
@@ -1124,11 +1070,17 @@ func copyNonEmptyStrings(vals []string) []string {
 }
 
 func branchFromReadTableQuery(r *http.Request) string {
-	branch := strings.TrimSpace(r.URL.Query().Get("branchName"))
-	if branch == "" {
-		branch = strings.TrimSpace(r.URL.Query().Get("branchId"))
+	return normalizeBranch(r.URL.Query().Get("branchName"))
+}
+
+func rejectUnsupportedQueryParam(w http.ResponseWriter, r *http.Request, name string) bool {
+	if !r.URL.Query().Has(name) {
+		return false
 	}
-	return normalizeBranch(branch)
+	writeAPIError(w, http.StatusBadRequest, "UnsupportedQueryParameter", "INVALID_ARGUMENT", map[string]any{
+		"parameter": name,
+	})
+	return true
 }
 
 func normalizeBranch(branch string) string {
