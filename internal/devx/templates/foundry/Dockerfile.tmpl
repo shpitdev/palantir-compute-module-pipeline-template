@@ -1,10 +1,17 @@
-FROM golang:1.25.8-alpine AS build
-WORKDIR /src
-COPY go.mod go.sum* ./
-RUN go mod download
-COPY . .
-RUN CGO_ENABLED=0 go build -o /out/compute-module ./cmd/compute-module
+# syntax=docker/dockerfile:1
 
-FROM alpine:3.22
+# Foundry Compute Module images must target linux/amd64.
+FROM --platform=linux/amd64 golang:1.25.8-bookworm AS build
+WORKDIR /src
+COPY . .
+RUN go mod download
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o /out/compute-module ./cmd/compute-module
+
+FROM --platform=linux/amd64 debian:bookworm-slim
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
 COPY --from=build /out/compute-module /usr/local/bin/compute-module
+# Foundry requires a numeric non-root user. UID/GID 5000 matches common mounted-token permissions.
+USER 5000:5000
 ENTRYPOINT ["compute-module"]

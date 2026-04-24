@@ -33,7 +33,7 @@ This repo is split into reusable kit packages and an example module:
 - `pkg/mockfoundry/...`: emulated Foundry server used by local harnesses and tests
 - `examples/email_enricher/...`: example email enrichment domain logic and output mapping
 - `cmd/enricher`: example binary wiring the kit + example
-- `cmd/foundry-cmgo`: bootstrap and local mock-data seeding CLI
+- `cmd/foundry-cmgo`: bootstrap, preview/build, and local mock-data seeding CLI
 
 External-consumer contracts are validated in:
 
@@ -71,7 +71,7 @@ Preflight diagnostics:
 
 ### DevX CLI
 
-`foundry-cmgo` keeps project generation and local mock-data seeding in Go instead of adding more shell branches. It can generate `minimal`, `dataset`, or `stream` starter repos.
+`foundry-cmgo` keeps project generation and local Foundry-like preview/build ergonomics in Go instead of adding more shell branches. It can generate `minimal`, `dataset`, or `stream` starter repos.
 
 Install the CLI for use outside this checkout:
 
@@ -86,26 +86,53 @@ That installs two commands into `~/.local/bin` by default:
 
 Use `./install-dev.sh` when you only want to refresh the dev shim. Both installers accept `--install-dir PATH` and `--no-shell-update`.
 
-Generate a minimal starter repo:
+Generate a starter repo, then use the first-class local Foundry loop:
 
 ```bash
-go run ./cmd/foundry-cmgo new --name my-module --module github.com/acme/my-module --dir /tmp/my-module --example dataset
+foundry-cmgo new --name my-module --module github.com/acme/my-module --dir /tmp/my-module --example dataset
+cd /tmp/my-module
+go test ./...
+foundry-cmgo preview --rows 20
+foundry-cmgo build
+foundry-cmgo inspect last
 ```
 
-Seed local mock Foundry inputs from CSV:
+`preview` starts an in-process mock Foundry server, samples the configured input CSV (default 1000 rows), runs the generated `cmd/compute-module foundry` path with `FOUNDRY_URL`, `BUILD2_TOKEN`, and `RESOURCE_ALIAS_MAP`, then prints a compact output table. `build` intentionally builds and runs the generated Docker container by default so container-only Foundry issues are caught before publishing; use `foundry-cmgo build --container=false` or `foundry-cmgo build --local-process` for the faster host-process path. Build uses the full input and writes committed local output under `.local/mock-foundry/` for dataset mode or run-local JSONL records for stream mode.
+
+Generated dataset/stream starters include `foundry-cmgo.yaml`:
+
+```yaml
+version: 1
+module:
+  command: ["go", "run", "./cmd/compute-module", "foundry"]
+inputs:
+  - alias: input
+    path: data/input.csv
+outputs:
+  - alias: output
+    mode: dataset
+mockFoundry:
+  root: .local/mock-foundry
+  branch: master
+preview:
+  rows: 1000
+  strategy: sampled
+```
+
+Advanced/debug: seed local mock Foundry inputs from CSV when driving a separate mock server or Docker Compose harness:
 
 ```bash
-go run ./cmd/foundry-cmgo seed dataset --csv ./emails.csv --alias-map test/fixtures/alias-map.json --alias input
+foundry-cmgo seed dataset --csv ./emails.csv --alias-map test/fixtures/alias-map.json --alias input
 ```
 
-Publish CSV rows into a running mock stream:
+Advanced/debug: publish CSV rows into a running mock stream:
 
 ```bash
 # terminal 1
 go run ./cmd/mock-foundry --addr :8080 --stream-rids ri.foundry.main.dataset.22222222-2222-2222-2222-222222222222
 
 # terminal 2
-go run ./cmd/foundry-cmgo seed stream --csv ./records.csv --alias-map test/fixtures/alias-map.json --alias output --url http://localhost:8080
+foundry-cmgo seed stream --csv ./records.csv --alias-map test/fixtures/alias-map.json --alias output --url http://localhost:8080
 ```
 
 Run locally (no Foundry required, Gemini required):

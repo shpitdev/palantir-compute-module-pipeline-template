@@ -65,6 +65,7 @@ func assertGeneratedFiles(t *testing.T, projectDir, example string) {
 	if example != "minimal" {
 		files = append(files,
 			"docker-compose.local.yml",
+			"foundry-cmgo.yaml",
 			"pipeline/csv.go",
 			"pipeline/pipeline_test.go",
 			"test/fixtures/alias-map.json",
@@ -75,6 +76,21 @@ func assertGeneratedFiles(t *testing.T, projectDir, example string) {
 	for _, rel := range files {
 		if _, err := os.Stat(filepath.Join(projectDir, rel)); err != nil {
 			t.Fatalf("expected generated file %s: %v", rel, err)
+		}
+	}
+	if example != "minimal" {
+		dockerfile, err := os.ReadFile(filepath.Join(projectDir, "Dockerfile"))
+		if err != nil {
+			t.Fatalf("read Dockerfile: %v", err)
+		}
+		text := string(dockerfile)
+		for _, want := range []string{"--platform=linux/amd64", "debian:bookworm-slim", "ca-certificates", "USER 5000:5000"} {
+			if !strings.Contains(text, want) {
+				t.Fatalf("Dockerfile missing %q:\n%s", want, text)
+			}
+		}
+		if strings.Contains(text, "alpine") {
+			t.Fatalf("Dockerfile should not use Alpine:\n%s", text)
 		}
 	}
 }

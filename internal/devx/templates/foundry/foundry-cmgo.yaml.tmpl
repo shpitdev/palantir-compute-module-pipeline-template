@@ -1,0 +1,15 @@
+version: 1
+module:
+  command: ["go", "run", "./cmd/compute-module", "foundry"]
+inputs:
+  - alias: input
+    path: data/input.csv
+outputs:
+  - alias: output
+    mode: {{.OutputMode}}
+mockFoundry:
+  root: .local/mock-foundry
+  branch: master
+preview:
+  rows: 1000
+  strategy: sampled
