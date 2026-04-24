@@ -76,7 +76,7 @@ Local and Foundry modes share the email-enricher pipeline contract; only I/O ada
 
 ## Dev Tooling
 
-This repo should have a single local verification entrypoint that matches CI (format + lint + test).
+This repo should have a single local verification entrypoint that matches CI (format + lint + test). Command-specific failures should explain the missing prerequisite at the point of use rather than sending users through a separate diagnostic flow.
 
 Primary commands:
 
@@ -84,7 +84,6 @@ Primary commands:
 | --- | --- |
 | Verify (CI parity + public consumer checks) | `./dev verify` |
 | Real Gemini + compose E2E | `./dev test` |
-| Doctor diagnostics | `./dev doctor` |
 | Local emulated flow (canonical) | `./dev run foundry-emulated` |
 | Local emulated flow with auto-rerun loop | `./dev run foundry-emulated --watch` |
 | Reset local emulated harness outputs | `./dev clean` |
