@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -76,5 +77,61 @@ func TestPreviewGeneratedStreamProject(t *testing.T) {
 	}
 	if _, err := os.Stat(preview.OutputPath); err != nil {
 		t.Fatalf("expected stream records output %s: %v", preview.OutputPath, err)
+	}
+}
+
+func TestPreviewMissingInputNamesConfigKeyAndResolvedPath(t *testing.T) {
+	root := t.TempDir()
+	projectDir := filepath.Join(root, "starter")
+	res, err := GenerateProject(GenerateOptions{
+		Name:         "starter",
+		Module:       "example.com/acme/starter",
+		Dir:          projectDir,
+		Example:      "dataset",
+		LocalReplace: repoRoot(t),
+	})
+	if err != nil {
+		t.Fatalf("GenerateProject failed: %v", err)
+	}
+	missing := filepath.Join(res.Dir, "data", "input.csv")
+	if err := os.Remove(missing); err != nil {
+		t.Fatalf("remove input fixture: %v", err)
+	}
+
+	_, err = Preview(context.Background(), RunOptions{Rows: 1, Timeout: 2 * time.Minute, WorkDir: res.Dir})
+	if err == nil {
+		t.Fatal("expected missing input error")
+	}
+	errText := err.Error()
+	for _, want := range []string{"inputs[0].path", "input", missing, "--input"} {
+		if !strings.Contains(errText, want) {
+			t.Fatalf("missing input error %q does not contain %q", errText, want)
+		}
+	}
+}
+
+func TestBuildLocalProcessDoesNotRequireDockerfile(t *testing.T) {
+	root := t.TempDir()
+	projectDir := filepath.Join(root, "starter")
+	res, err := GenerateProject(GenerateOptions{
+		Name:         "starter",
+		Module:       "example.com/acme/starter",
+		Dir:          projectDir,
+		Example:      "dataset",
+		LocalReplace: repoRoot(t),
+	})
+	if err != nil {
+		t.Fatalf("GenerateProject failed: %v", err)
+	}
+	if err := os.Remove(filepath.Join(res.Dir, "Dockerfile")); err != nil {
+		t.Fatalf("remove Dockerfile: %v", err)
+	}
+
+	build, err := Build(context.Background(), RunOptions{Timeout: 2 * time.Minute, WorkDir: res.Dir, Container: false})
+	if err != nil {
+		t.Fatalf("Build local process failed without Dockerfile: %v", err)
+	}
+	if build.Container || build.Runner != "local process" || build.OutputRows != 2 {
+		t.Fatalf("unexpected local build result: %+v", build)
 	}
 }

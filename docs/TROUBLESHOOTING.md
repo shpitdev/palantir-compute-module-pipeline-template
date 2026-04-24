@@ -86,6 +86,33 @@ Fix:
   - `docker run --rm -v "<repo>/.local:/work" alpine:3 sh -c "chown -R <uid>:<gid> /work"`
 - Run `./dev clean` to reset compose resources and clear uploads while preserving inputs.
 
+## `foundry-cmgo preview` / `build` Fails Before Running the Module
+
+Symptoms:
+
+- Errors mention `foundry-cmgo.yaml`, `inputs[0].path`, `outputs[0].mode`, `module.command`, `Dockerfile`, or `docker info`.
+- `foundry-cmgo build` exits before Docker build output starts.
+
+Why it happens:
+
+- `preview` and `build` validate the command-specific prerequisites before expensive orchestration. Predictable setup problems should point at the exact config key and resolved path instead of failing later as generic module errors.
+- `build` uses Docker by default for container parity, so it checks the generated `Dockerfile`, Docker CLI, Docker daemon, and container-readable run-state files before running the generated module.
+
+Fix:
+
+- Missing input: update `foundry-cmgo.yaml` `inputs[0].path`, or pass `foundry-cmgo preview --input <csv>`.
+- Unsupported output mode: set `outputs[0].mode` to `dataset` or `stream`.
+- Docker unavailable: start Docker and re-run `foundry-cmgo build`; use `foundry-cmgo build --local-process` only when you explicitly want to bypass container parity.
+- Docker networking failures are reported separately from module failures. The current Linux strategy is `--network host`; when that environment is hostile, inspect `.local/foundry-cmgo/builds/<run-id>/run.log` and retry with `--local-process` to isolate module logic.
+
+Generated starter regression check:
+
+```bash
+./dev verify foundry-cmgo
+```
+
+This builds the local CLI once, generates fresh dataset and stream starters, and runs their `go test`, `preview`, default Docker `build`, and `inspect` loops end-to-end.
+
 ## E2E Output Rows Show `status=error`
 
 Symptoms:

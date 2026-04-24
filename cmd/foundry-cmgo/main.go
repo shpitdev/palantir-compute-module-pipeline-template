@@ -64,7 +64,9 @@ Usage:
   foundry-cmgo new [--name NAME --module MODULE --dir DIR --example minimal|dataset|stream]
   foundry-cmgo preview [--rows 1000 --input data/input.csv --output-mode dataset|stream]
   foundry-cmgo build [--input data/input.csv --output-mode dataset|stream] [--container=false|--local-process]
-  foundry-cmgo inspect last
+  foundry-cmgo inspect last [--json]
+  foundry-cmgo inspect config
+  foundry-cmgo inspect outputs
   foundry-cmgo seed dataset --csv INPUT.csv --alias-map alias-map.json [--alias input]
   foundry-cmgo seed stream --csv RECORDS.csv --alias-map alias-map.json [--alias output] --url http://localhost:8080
   foundry-cmgo version
@@ -73,7 +75,7 @@ Commands:
   new           Generate a Go compute-module starter repo
   preview       Run the module against sampled local input using in-process mock Foundry
   build         Run the container against full local input and commit local mock Foundry output
-  inspect last  Show the last preview/build output location and summary
+  inspect       Show resolved config, last run, or output artifact locations
   seed dataset  Copy a CSV into the mock Foundry dataset input layout
   seed stream   Publish CSV rows to a running mock Foundry stream endpoint
 
@@ -210,8 +212,32 @@ func runBuild(ctx context.Context, args []string, stdout, stderr *os.File) int {
 }
 
 func runInspect(args []string, stdout, stderr *os.File) int {
-	if len(args) == 0 || args[0] != "last" {
-		_, _ = fmt.Fprintln(stderr, "inspect requires target: last")
+	if len(args) == 0 {
+		_, _ = fmt.Fprintln(stderr, "inspect requires target: last, config, or outputs")
+		return 2
+	}
+	switch args[0] {
+	case "last":
+		return runInspectLast(args[1:], stdout, stderr)
+	case "config":
+		return runInspectConfig(args[1:], stdout, stderr)
+	case "outputs":
+		return runInspectOutputs(args[1:], stdout, stderr)
+	default:
+		_, _ = fmt.Fprintf(stderr, "unknown inspect target: %s\n", args[0])
+		return 2
+	}
+}
+
+func runInspectLast(args []string, stdout, stderr *os.File) int {
+	fs := flag.NewFlagSet("inspect last", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	jsonOut := fs.Bool("json", false, "Print machine-readable JSON")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if fs.NArg() > 0 {
+		_, _ = fmt.Fprintf(stderr, "unexpected arg: %s\n", fs.Arg(0))
 		return 2
 	}
 	manifest, err := devx.InspectLast()
@@ -219,6 +245,76 @@ func runInspect(args []string, stdout, stderr *os.File) int {
 		_, _ = fmt.Fprintf(stderr, "inspect last failed: %v\n", err)
 		return 1
 	}
+	if *jsonOut {
+		enc := json.NewEncoder(stdout)
+		enc.SetIndent("", "  ")
+		if err := enc.Encode(manifest); err != nil {
+			return 1
+		}
+		return 0
+	}
+	renderLastRun(stdout, manifest)
+	return 0
+}
+
+func runInspectConfig(args []string, stdout, stderr *os.File) int {
+	fs := flag.NewFlagSet("inspect config", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	config := fs.String("config", "", "Project config path (defaults to foundry-cmgo.yaml with inference fallback)")
+	jsonOut := fs.Bool("json", false, "Print machine-readable JSON")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if fs.NArg() > 0 {
+		_, _ = fmt.Fprintf(stderr, "unexpected arg: %s\n", fs.Arg(0))
+		return 2
+	}
+	inspection, err := devx.InspectConfig(devx.InspectOptions{ConfigPath: *config})
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "inspect config failed: %v\n", err)
+		return 1
+	}
+	if *jsonOut {
+		enc := json.NewEncoder(stdout)
+		enc.SetIndent("", "  ")
+		if err := enc.Encode(inspection); err != nil {
+			return 1
+		}
+		return 0
+	}
+	renderConfigInspection(stdout, inspection)
+	return 0
+}
+
+func runInspectOutputs(args []string, stdout, stderr *os.File) int {
+	fs := flag.NewFlagSet("inspect outputs", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	jsonOut := fs.Bool("json", false, "Print machine-readable JSON")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if fs.NArg() > 0 {
+		_, _ = fmt.Fprintf(stderr, "unexpected arg: %s\n", fs.Arg(0))
+		return 2
+	}
+	inspection, err := devx.InspectOutputs(devx.InspectOptions{})
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "inspect outputs failed: %v\n", err)
+		return 1
+	}
+	if *jsonOut {
+		enc := json.NewEncoder(stdout)
+		enc.SetIndent("", "  ")
+		if err := enc.Encode(inspection); err != nil {
+			return 1
+		}
+		return 0
+	}
+	renderOutputsInspection(stdout, inspection)
+	return 0
+}
+
+func renderLastRun(stdout *os.File, manifest devx.LastRunManifest) {
 	res := manifest.Result
 	_, _ = fmt.Fprintf(stdout, "%s %s\n\n", titleStyle.Render("Foundry CMGO Last Run"), successStyle.Render("✓"))
 	tw := tabwriter.NewWriter(stdout, 0, 0, 2, ' ', 0)
@@ -229,10 +325,61 @@ func runInspect(args []string, stdout, stderr *os.File) int {
 	if res.OutputPath != "" {
 		_, _ = fmt.Fprintf(tw, "Output path\t%s\n", res.OutputPath)
 	}
+	if res.DockerNetworkStrategy != "" {
+		_, _ = fmt.Fprintf(tw, "Docker network\t%s\n", res.DockerNetworkStrategy)
+	}
 	_, _ = fmt.Fprintf(tw, "State\t%s\n", res.StateDir)
 	_, _ = fmt.Fprintf(tw, "Log\t%s\n", res.LogPath)
 	_ = tw.Flush()
-	return 0
+}
+
+func renderConfigInspection(stdout *os.File, inspection devx.ProjectConfigInspection) {
+	_, _ = fmt.Fprintf(stdout, "%s %s\n\n", titleStyle.Render("Foundry CMGO Config"), successStyle.Render("✓"))
+	tw := tabwriter.NewWriter(stdout, 0, 0, 2, ' ', 0)
+	source := inspection.ConfigPath
+	if inspection.Inferred {
+		source = "inferred defaults (no foundry-cmgo.yaml found)"
+	}
+	_, _ = fmt.Fprintf(tw, "Source\t%s\n", source)
+	_, _ = fmt.Fprintf(tw, "Workdir\t%s\n", inspection.WorkDir)
+	_, _ = fmt.Fprintf(tw, "Transform\t%s\n", strings.Join(inspection.ModuleCommand, " "))
+	for _, input := range inspection.Inputs {
+		_, _ = fmt.Fprintf(tw, "Input\t%s\t%s\n", input.Alias, input.ResolvedPath)
+	}
+	for _, output := range inspection.Outputs {
+		_, _ = fmt.Fprintf(tw, "Output\t%s\t%s @ %s\n", output.Alias, output.Mode, output.Branch)
+	}
+	_, _ = fmt.Fprintf(tw, "Mock root\t%s\n", inspection.ResolvedMockRoot)
+	_, _ = fmt.Fprintf(tw, "Preview\t%d rows\t%s\n", inspection.PreviewRows, inspection.PreviewStrategy)
+	_ = tw.Flush()
+	_, _ = fmt.Fprintln(stdout, mutedStyle.Render("next: foundry-cmgo preview --rows 1"))
+}
+
+func renderOutputsInspection(stdout *os.File, inspection devx.OutputsInspection) {
+	_, _ = fmt.Fprintf(stdout, "%s %s\n\n", titleStyle.Render("Foundry CMGO Outputs"), successStyle.Render("✓"))
+	if !inspection.HasLastRun {
+		_, _ = fmt.Fprintf(stdout, "No previous preview/build run found at %s\n", inspection.LastRunManifest)
+		_, _ = fmt.Fprintln(stdout, mutedStyle.Render("next: foundry-cmgo preview"))
+		return
+	}
+	tw := tabwriter.NewWriter(stdout, 0, 0, 2, ' ', 0)
+	_, _ = fmt.Fprintf(tw, "Last run\t%s\t%s\n", inspection.Kind, inspection.UpdatedAt)
+	_, _ = fmt.Fprintf(tw, "Output\t%s\t%s @ %s\n", inspection.OutputAlias, inspection.OutputMode, inspection.OutputBranch)
+	label := "Rows"
+	if inspection.OutputMode == "stream" {
+		label = "Records"
+	}
+	_, _ = fmt.Fprintf(tw, "%s\t%d\n", label, inspection.RowsOrRecords)
+	if inspection.OutputPath != "" {
+		_, _ = fmt.Fprintf(tw, "Artifact\t%s\n", inspection.OutputPath)
+	}
+	if inspection.DockerNetwork != "" {
+		_, _ = fmt.Fprintf(tw, "Docker network\t%s\n", inspection.DockerNetwork)
+	}
+	_, _ = fmt.Fprintf(tw, "State\t%s\n", inspection.StateDir)
+	_, _ = fmt.Fprintf(tw, "Log\t%s\n", inspection.RunLogPath)
+	_ = tw.Flush()
+	_, _ = fmt.Fprintln(stdout, mutedStyle.Render("next: inspect the artifact path above or rerun foundry-cmgo build"))
 }
 
 func renderRunResult(stdout, _ *os.File, res devx.LocalRunResult, jsonOut bool) int {
@@ -253,7 +400,7 @@ func renderRunResult(stdout, _ *os.File, res devx.LocalRunResult, jsonOut bool) 
 	}
 	_, _ = fmt.Fprintf(stdout, "%s %s\n\n", titleStyle.Render(name), successStyle.Render("✓"))
 	tw := tabwriter.NewWriter(stdout, 0, 0, 2, ' ', 0)
-	_, _ = fmt.Fprintf(tw, "Transform\t%s\n", strings.Join(res.Command, " "))
+	_, _ = fmt.Fprintf(tw, "Transform\t%s\n", displayCommand(res))
 	inputShape := fmt.Sprintf("%d rows", res.SampledRows)
 	if res.Kind == "preview" && res.SampledRows < res.InputRows {
 		inputShape = fmt.Sprintf("sampled %d/%d rows", res.SampledRows, res.InputRows)
@@ -268,6 +415,9 @@ func renderRunResult(stdout, _ *os.File, res devx.LocalRunResult, jsonOut bool) 
 		runner += " (default)"
 	}
 	_, _ = fmt.Fprintf(tw, "Runtime\t%s\t%s\n", runner, res.Duration.Round(time.Millisecond))
+	if res.DockerNetworkStrategy != "" {
+		_, _ = fmt.Fprintf(tw, "Docker network\t%s\n", res.DockerNetworkStrategy)
+	}
 	if res.OutputPath != "" {
 		label := "Output records"
 		if res.OutputMode == "dataset" {
@@ -278,7 +428,7 @@ func renderRunResult(stdout, _ *os.File, res devx.LocalRunResult, jsonOut bool) 
 	_ = tw.Flush()
 	_, _ = fmt.Fprintln(stdout)
 	if res.Kind == "build" && res.Container {
-		_, _ = fmt.Fprintln(stdout, mutedStyle.Render("note: build runs through Docker by default to catch Foundry container issues; use --container=false or --local-process for the faster local-process path."))
+		_, _ = fmt.Fprintln(stdout, mutedStyle.Render("note: Docker build is the default parity check; use --local-process for faster host-process debugging."))
 		_, _ = fmt.Fprintln(stdout)
 	}
 	renderTable(stdout, res.PreviewHeader, res.PreviewRows)
@@ -286,6 +436,13 @@ func renderRunResult(stdout, _ *os.File, res devx.LocalRunResult, jsonOut bool) 
 	_, _ = fmt.Fprintf(stdout, "%d rows output · state: %s · log: %s\n", res.OutputRows, res.StateDir, res.LogPath)
 	_, _ = fmt.Fprintln(stdout, mutedStyle.Render("next: "+next))
 	return 0
+}
+
+func displayCommand(res devx.LocalRunResult) string {
+	if res.Container {
+		return fmt.Sprintf("Docker container -> foundry --input-alias %s --output-alias %s --output-mode %s", res.InputAlias, res.OutputAlias, res.OutputMode)
+	}
+	return strings.Join(res.Command, " ")
 }
 
 func renderTable(w *os.File, header []string, rows [][]string) {
