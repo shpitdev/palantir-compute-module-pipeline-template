@@ -609,7 +609,7 @@ This repo does **not** currently model the full newer high-scale streams contrac
 
 ### Cleanup implication
 
-Stream I/O should be isolated behind an adapter so future support for the newer surface does not require another orchestration rewrite.
+Stream I/O is isolated behind `foundryio.StreamBackend`, so a future high-scale backend can be added without rewriting app orchestration.
 
 ---
 
@@ -788,28 +788,18 @@ for the endpoints this repo depends on.
 
 ## 10.1 Current repo behavior
 
-The repo currently retries some transient failures such as:
+Foundry dataset and legacy stream-proxy I/O use `foundryio.DefaultRetryPolicy` and `foundryio.RetryTransient`. Retryable failures include:
 
 - network timeouts
 - connection resets/refusals
 - `429`
 - `5xx`
 
-### Status
+Permission and not-found responses are not classified as transient; callers handle them as contract-level outcomes where appropriate.
 
-- **Confirmed** as repo behavior
-- **Reasonable** relative to platform semantics
-- **Not yet exhaustively validated** endpoint by endpoint
+## 10.2 Boundary
 
-## 10.2 Contract requirement
-
-Retryability must become explicit and centralized.
-
-This should be modeled separately for:
-
-- dataset reads/writes
-- stream writes
-- internal runtime polling
+Worker/enricher retry remains separate from Foundry I/O retry because it handles per-row provider behavior rather than Foundry transport behavior.
 
 ---
 
@@ -829,116 +819,59 @@ The following are intentionally out of scope for parity v1:
 
 ---
 
-# 12. Cleanup implications
+# 12. Current implementation status
 
-## 12.1 Introduce a single canonical row/schema contract
+The parity contract is now reflected in the code through these boundaries:
 
-Unify ownership of:
+| Contract area | Current owner | Status |
+| --- | --- | --- |
+| Email-enricher output columns and CSV codec | `examples/email_enricher/pipeline/rows.go`, `csv.go` | Implemented |
+| Legacy stream JSON row codec and stream table projection | `examples/email_enricher/pipeline/stream.go` | Implemented |
+| Foundry stream API family boundary | `pkg/pipeline/io/foundry/stream_backend.go` | Implemented for legacy stream-proxy |
+| Foundry retry policy for dataset and stream I/O | `pkg/pipeline/io/foundry/retry.go` | Implemented |
+| Incremental cache planning and row selection | `internal/app/incremental.go` | Implemented, app-local |
+| Mock stream readTable header projection | `pkg/mockfoundry/server.go` with caller-supplied header | Implemented |
 
-- field list
-- CSV header
-- CSV encode/decode
-- stream-record encode/decode
-- nullability behavior
-- metadata fields like `run_id`, `written_at`
-
-This should eliminate the current duplication between:
-
-- example pipeline code
-- app orchestration
-- mock Foundry server
+The app runner should stay focused on orchestration. Stream codecs, retry policy, and incremental merge helpers should not be reintroduced into `internal/app/enricher.go`.
 
 ---
 
-## 12.2 Introduce explicit adapter boundaries
+# 13. Remaining parity gaps
 
-### Dataset side
+These are the intentionally unresolved areas after the current cleanup slice:
 
-Introduce a dataset-view-oriented boundary, not just raw endpoint helpers.
+## 13.1 High-scale streams backend
 
-### Stream side
+Official platform SDKs expose the newer high-scale streams API, but this repo still runs on the legacy compute-module-compatible stream-proxy surface. The `StreamBackend` boundary exists so a future `HighScaleStreamsBackend` can be added without rewriting `RunFoundry`.
 
-Introduce an adapter such as:
+Do not switch the default backend without evidence that the target compute-module deployment path should prefer the high-scale surface.
 
-- `StreamBackend`
-  - `LegacyStreamProxyBackend`
-  - future `HighScaleStreamsBackend`
+## 13.2 Dataset-view history fidelity
 
-This is now justified by the evidence from official SDK repos.
+The mock server supports the dataset transaction behavior this template uses, but it does not implement a full historical Foundry dataset-view engine. In particular, exact transaction-range behavior, snapshot reset handling across arbitrary histories, and pagination remain simplified.
 
----
+## 13.3 Stream archive timing
 
-## 12.3 Split orchestration from contract codecs
+The local mock exposes stream records through a dataset-style CSV projection for local read-after-write and incremental-cache tests. It does not model real hot-buffer-to-cold-storage archive lag.
 
-`internal/app/enricher.go` should stop owning:
+## 13.4 Authz fidelity
 
-- stream record shape logic
-- row encoding/decoding logic
-- dataset-view merge semantics
-- retry classification helpers
-
-Those should move to reusable contract-driven packages.
+The mock can distinguish success, not found, and permission denied in tests, but it does not model Foundry row-level policy or full authorization behavior.
 
 ---
 
-## 12.4 Align tests to the contract
+# 14. Open questions
 
-Test groups should be organized around:
+Use **Tabex** only if local docs, SDKs, HARs, and code are insufficient to answer one of these stack-specific questions:
 
-### Runtime contract
-
-- file-backed token
-- file-backed aliases
-- service discovery
-- internal runtime env handling
-
-### Dataset-view contract
-
-- branch views
-- transaction views
-- transaction-range semantics
-- open transaction reuse
-- commit visibility
-- permission/not-found handling
-
-### Legacy stream contract
-
-- probe behavior
-- publish behavior
-- parser tolerance for response envelopes
-- append semantics
-
-### Stream-backed dataset-view contract
-
-- archived stream output visible as dataset-view state
-- schema continuity
-- transaction/file-history visibility at the level the repo depends on
+1. Which stream surface should this template prefer on the target compute-module stack: legacy stream-proxy or high-scale streams?
+2. Which `stream-proxy /records` response envelopes still appear on the target stack?
+3. Does `viewRid` matter for this template's stream output and incremental-cache behavior?
+4. How much stream archival lag should the local emulator model for meaningful confidence?
 
 ---
 
-# 13. Open questions
-
-These are now narrower than before.
-
-## Open question 1
-
-Should this template remain on the legacy stream-proxy surface, or eventually add support for the newer high-scale streams API?
-
-## Open question 2
-
-How much of `viewRid` behavior matters for this repo’s actual use case?
-
-## Open question 3
-
-How closely should the emulator model the lag between stream publication and archived dataset-view visibility?
-
-## Open question 4
-
-Which stack-specific response shapes still need verification via **Tabex**?
-
----
-
-# 14. Evidence used
+# 15. Evidence used
 
 ## Official docs
 
@@ -961,35 +894,3 @@ Which stack-specific response shapes still need verification via **Tabex**?
 
 - `.memory/data-tmp/23dimethyl.usw-3.palantirfoundry.com-logs-0.0.18-clean-stream.har`
 - `.memory/data-tmp/part=0_start=8.avro`
-
----
-
-# 15. Immediate next steps
-
-## P0
-
-- add this file as `docs/FOUNDRY_PARITY.md`
-- explicitly document **legacy vs high-scale stream APIs**
-- explicitly document **dataset view semantics**
-
-## P1
-
-- extract unified row/schema/CSV/stream codec ownership
-- introduce a `StreamBackend` abstraction
-- move dataset-view merge logic out of app orchestration
-
-## P2
-
-- add contract-focused tests
-- add emulator support for the remaining required dataset-view and legacy-stream behaviors
-
-## P3
-
-- decide whether to keep legacy stream-proxy only or add an optional high-scale stream backend
-- use **Tabex** only for the remaining unresolved stack-specific questions
-
----
-
-# Recommended note to include in the repo
-
-> This repo currently targets the legacy compute-module-compatible stream-proxy surface for stream outputs. Official platform SDKs also expose a newer high-scale streams API. The codebase should isolate stream I/O behind an adapter boundary so future support for either or both surfaces does not require another orchestration rewrite.

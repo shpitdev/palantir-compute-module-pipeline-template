@@ -145,6 +145,7 @@ Note: CI jobs that require Gemini secrets are skipped automatically if `GEMINI_A
 ## Docs
 
 - `docs/DESIGN.md`: architecture, interfaces, local testing approach
+- `docs/FOUNDRY_PARITY.md`: explicit Foundry behavior contract, evidence, and remaining parity gaps
 - `docs/RELEASE.md`: Foundry configuration steps (Sources, egress, probes) and publishing guidance
 - `docs/TROUBLESHOOTING.md`: common deployment failures and diagnosis
 - `docs/DIAGRAMS.md`: Mermaid sequence diagrams + flowcharts for API usage scenarios

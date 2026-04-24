@@ -17,10 +17,15 @@ Foundry injects:
 - `BUILD2_TOKEN` (file path)
 - `RESOURCE_ALIAS_MAP` (file path)
 
+Foundry service discovery should provide:
+
+- `FOUNDRY_SERVICE_DISCOVERY_V2`: file path containing `api_gateway` and `stream_proxy` base URLs
+
 You must provide (via compute module configuration):
 
-- `FOUNDRY_URL`: Foundry base URL or hostname (example formats: `https://<your-stack>.palantirfoundry.com` or `<your-stack>.palantirfoundry.com`)
 - `GEMINI_MODEL`: Gemini model name (do not hardcode in code; configure per environment)
+
+`FOUNDRY_URL` remains supported as a local/back-compat fallback when service discovery is unavailable.
 
 Gemini API key (recommended: Foundry Sources):
 
@@ -66,7 +71,7 @@ This binary handles that by:
 
 #### Stream Output (Stream-Proxy)
 
-If the configured output is a stream, this binary writes output rows by publishing JSON records via the stream-proxy API.
+If the configured output is a stream, this binary writes output rows through the legacy stream-proxy backend. The backend boundary is `foundryio.StreamBackend`; high-scale streams support is not implemented yet.
 
 ### Egress Policy
 
@@ -79,9 +84,9 @@ At minimum, expect to allowlist:
 
 Confirm exact domains from the client library / runtime behavior before locking the policy.
 
-In addition, if your module calls Foundry REST APIs (this repo does), you should plan to allow access to your Foundry stack host
-(the same host used by `FOUNDRY_URL`) via a Source/network policy as well. This does not mean "leaving Foundry"; it is simply
-allowing the container to make HTTPS requests to the stack's API gateway.
+In addition, if your module calls Foundry REST APIs (this repo does), you should plan to allow access to the Foundry service hosts
+resolved by `FOUNDRY_SERVICE_DISCOVERY_V2` (or the `FOUNDRY_URL` fallback in local/back-compat environments). This does not mean
+"leaving Foundry"; it is simply allowing the container to make HTTPS requests to the stack's API gateway and stream-proxy.
 
 Practical pattern:
 
@@ -119,15 +124,15 @@ Release version bumps and Git tag creation are automated by `.github/workflows/r
 - `FOUNDRY_TOKEN`: token used as the `docker login` password.
 - `FOUNDRY_REGISTRY_HOST`: Foundry container registry host (example: `<your-stack>-container-registry.palantirfoundry.com`).
 - `FOUNDRY_DOCKER_IMAGE_NAME`: image name in the registry (example: `email-enrichment-google`).
-- `FOUNDRY_URL`: stack URL (kept for related workflows and docs consistency).
+
+`FOUNDRY_TOKEN` must be current when publishing. An expired token will fail the registry login/push stage even if all build and test stages pass.
 
 ### Tagging Behavior
 
-- On `main` pushes: publish `sha-<short-gitsha>` and moving tag `main`.
-- After a successful `main` publish, `release-version` bumps `internal/version/version.go` with a bot PR,
-  auto-merges with a `[skip ci]` squash commit, and creates tag `vX.Y.Z` from that merge commit.
-- On release tags `v*`: publish both `sha-<short-gitsha>` and `<X.Y.Z>` (the leading `v` is removed for image tags).
-- On pull requests: build only (no push) to validate Docker buildability.
+- Pull requests run a Foundry-image build only; they do not push to the Foundry registry.
+- After successful CI on `main`, `release-version` bumps `internal/version/version.go` with a bot PR, auto-merges with a `[skip ci]` squash commit, and creates tag `vX.Y.Z` from that merge commit.
+- Release tags `v*` trigger `publish-foundry.yml`, which publishes image tag `<X.Y.Z>` (the leading `v` is removed).
+- The separate `ci.yml` Docker job builds the public GHCR image and pushes only on push events.
 
 ### Permissions
 
