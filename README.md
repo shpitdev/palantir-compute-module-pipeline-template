@@ -73,6 +73,19 @@ Preflight diagnostics:
 
 `foundry-cmgo` keeps project generation and local mock-data seeding in Go instead of adding more shell branches. It can generate `minimal`, `dataset`, or `stream` starter repos.
 
+Install the CLI for use outside this checkout:
+
+```bash
+./install.sh
+```
+
+That installs two commands into `~/.local/bin` by default:
+
+- `foundry-cmgo`: a built binary from the current checkout
+- `foundry-cmgo-dev`: a checkout-linked shim that rebuilds and runs the latest source from this checkout
+
+Use `./install-dev.sh` when you only want to refresh the dev shim. Both installers accept `--install-dir PATH` and `--no-shell-update`.
+
 Generate a minimal starter repo:
 
 ```bash
