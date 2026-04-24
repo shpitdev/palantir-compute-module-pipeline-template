@@ -25,6 +25,14 @@ assert_contains_file() {
   fi
 }
 
+"${ROOT_DIR}/scripts/foundry-cmgo-dev" >/tmp/foundry-cmgo-dev-shim-noargs.out 2>&1 || true
+assert_contains_file /tmp/foundry-cmgo-dev-shim-noargs.out "Usage:" "dev shim should forward zero args as zero args"
+if grep -Fq "unknown command:" /tmp/foundry-cmgo-dev-shim-noargs.out; then
+  cat /tmp/foundry-cmgo-dev-shim-noargs.out >&2
+  fail "dev shim should not pass a spurious empty argument"
+fi
+pass "dev shim preserves no-args usage"
+
 "${ROOT_DIR}/scripts/foundry-cmgo-dev" new \
   --name shim-default \
   --module example.com/acme/shim-default \

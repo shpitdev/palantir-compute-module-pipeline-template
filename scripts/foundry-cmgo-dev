@@ -29,6 +29,10 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 inject_local_replace_for_new() {
+  if (($# == 0)); then
+    return
+  fi
+
   if [[ "${1:-}" != "new" ]]; then
     printf '%s\0' "$@"
     return
