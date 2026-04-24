@@ -6,7 +6,7 @@
 [![Release Automation](https://github.com/anand-testcompare/palantir-compute-module-pipeline-search/actions/workflows/release-version.yml/badge.svg?branch=main)](https://github.com/anand-testcompare/palantir-compute-module-pipeline-search/actions/workflows/release-version.yml)
 
 <!-- Core stack -->
-[![Go](https://img.shields.io/badge/Go-1.25-00ADD8?logo=go&logoColor=white)](https://go.dev/doc/)
+[![Go](https://img.shields.io/badge/Go-1.25.8-00ADD8?logo=go&logoColor=white)](https://go.dev/doc/)
 [![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white)](https://docs.docker.com/compose/)
 [![Palantir Foundry](https://img.shields.io/badge/Palantir_Foundry-Compute_Module-0B74DE)](https://www.palantir.com/platforms/foundry/)
 [![Gemini](https://img.shields.io/badge/Google_Gemini-API-4285F4?logo=google&logoColor=white)](https://ai.google.dev/)
@@ -33,6 +33,7 @@ This repo is split into reusable kit packages and an example module:
 - `pkg/mockfoundry/...`: emulated Foundry server used by local harnesses and tests
 - `examples/email_enricher/...`: example email enrichment domain logic and output mapping
 - `cmd/enricher`: example binary wiring the kit + example
+- `cmd/foundry-devx`: bootstrap and local mock-data seeding CLI
 
 External-consumer contracts are validated in:
 
@@ -66,6 +67,32 @@ Preflight diagnostics:
 ```bash
 ./dev doctor
 ./dev doctor --json
+```
+
+### DevX CLI
+
+`foundry-devx` keeps project generation and local mock-data seeding in Go instead of adding more shell branches.
+
+Generate a minimal starter repo:
+
+```bash
+go run ./cmd/foundry-devx new --name my-module --module github.com/acme/my-module --dir /tmp/my-module
+```
+
+Seed local mock Foundry inputs from CSV:
+
+```bash
+go run ./cmd/foundry-devx seed dataset --csv ./emails.csv --alias-map test/fixtures/alias-map.json --alias input
+```
+
+Publish CSV rows into a running mock stream:
+
+```bash
+# terminal 1
+go run ./cmd/mock-foundry --addr :8080 --stream-rids ri.foundry.main.dataset.22222222-2222-2222-2222-222222222222
+
+# terminal 2
+go run ./cmd/foundry-devx seed stream --csv ./records.csv --alias-map test/fixtures/alias-map.json --alias output --url http://localhost:8080
 ```
 
 Run locally (no Foundry required, Gemini required):
