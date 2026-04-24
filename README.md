@@ -33,7 +33,7 @@ This repo is split into reusable kit packages and an example module:
 - `pkg/mockfoundry/...`: emulated Foundry server used by local harnesses and tests
 - `examples/email_enricher/...`: example email enrichment domain logic and output mapping
 - `cmd/enricher`: example binary wiring the kit + example
-- `cmd/foundry-devx`: bootstrap and local mock-data seeding CLI
+- `cmd/foundry-cmgo`: bootstrap and local mock-data seeding CLI
 
 External-consumer contracts are validated in:
 
@@ -71,18 +71,18 @@ Preflight diagnostics:
 
 ### DevX CLI
 
-`foundry-devx` keeps project generation and local mock-data seeding in Go instead of adding more shell branches.
+`foundry-cmgo` keeps project generation and local mock-data seeding in Go instead of adding more shell branches. It can generate `minimal`, `dataset`, or `stream` starter repos.
 
 Generate a minimal starter repo:
 
 ```bash
-go run ./cmd/foundry-devx new --name my-module --module github.com/acme/my-module --dir /tmp/my-module
+go run ./cmd/foundry-cmgo new --name my-module --module github.com/acme/my-module --dir /tmp/my-module --example dataset
 ```
 
 Seed local mock Foundry inputs from CSV:
 
 ```bash
-go run ./cmd/foundry-devx seed dataset --csv ./emails.csv --alias-map test/fixtures/alias-map.json --alias input
+go run ./cmd/foundry-cmgo seed dataset --csv ./emails.csv --alias-map test/fixtures/alias-map.json --alias input
 ```
 
 Publish CSV rows into a running mock stream:
@@ -92,7 +92,7 @@ Publish CSV rows into a running mock stream:
 go run ./cmd/mock-foundry --addr :8080 --stream-rids ri.foundry.main.dataset.22222222-2222-2222-2222-222222222222
 
 # terminal 2
-go run ./cmd/foundry-devx seed stream --csv ./records.csv --alias-map test/fixtures/alias-map.json --alias output --url http://localhost:8080
+go run ./cmd/foundry-cmgo seed stream --csv ./records.csv --alias-map test/fixtures/alias-map.json --alias output --url http://localhost:8080
 ```
 
 Run locally (no Foundry required, Gemini required):

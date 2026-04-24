@@ -1,0 +1,21 @@
+package pipeline
+
+import (
+	"bytes"
+	"testing"
+
+	"{{.Module}}/processor"
+)
+
+func TestWriteCSV(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	rows := []Row{RowFromResult(processor.Result{Input: "a@example.com", Value: "A@EXAMPLE.COM"})}
+	if err := WriteCSV(&buf, rows); err != nil {
+		t.Fatalf("WriteCSV failed: %v", err)
+	}
+	if got := buf.String(); got != "email,value,status\na@example.com,A@EXAMPLE.COM,ok\n" {
+		t.Fatalf("unexpected csv: %q", got)
+	}
+}

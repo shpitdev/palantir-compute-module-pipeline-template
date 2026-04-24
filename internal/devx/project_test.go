@@ -8,36 +8,41 @@ import (
 	"testing"
 )
 
-func TestGenerateProjectCreatesCompilableStarter(t *testing.T) {
+func TestGenerateProjectCreatesCompilableStarters(t *testing.T) {
 	t.Parallel()
 
-	root := t.TempDir()
-	projectDir := filepath.Join(root, "starter")
-	repoRoot := repoRoot(t)
+	for _, example := range []string{"minimal", "dataset", "stream"} {
+		example := example
+		t.Run(example, func(t *testing.T) {
+			t.Parallel()
 
-	res, err := GenerateProject(GenerateOptions{
-		Name:         "starter",
-		Module:       "example.com/acme/starter",
-		Dir:          projectDir,
-		LocalReplace: repoRoot,
-	})
-	if err != nil {
-		t.Fatalf("GenerateProject failed: %v", err)
-	}
-	if res.Dir != projectDir {
-		t.Fatalf("Dir = %q, want %q", res.Dir, projectDir)
-	}
-	for _, rel := range []string{"go.mod", "README.md", "Dockerfile", "cmd/compute-module/main.go", "processor/processor.go", "processor/processor_test.go", ".gitignore"} {
-		if _, err := os.Stat(filepath.Join(projectDir, rel)); err != nil {
-			t.Fatalf("expected generated file %s: %v", rel, err)
-		}
-	}
+			root := t.TempDir()
+			projectDir := filepath.Join(root, "starter")
+			repoRoot := repoRoot(t)
 
-	cmd := exec.Command("go", "test", "./...")
-	cmd.Dir = projectDir
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("generated project go test failed: %v\n%s", err, out)
+			res, err := GenerateProject(GenerateOptions{
+				Name:         "starter",
+				Module:       "example.com/acme/starter",
+				Dir:          projectDir,
+				Example:      example,
+				LocalReplace: repoRoot,
+			})
+			if err != nil {
+				t.Fatalf("GenerateProject failed: %v", err)
+			}
+			if res.Dir != projectDir {
+				t.Fatalf("Dir = %q, want %q", res.Dir, projectDir)
+			}
+			assertGeneratedFiles(t, projectDir, example)
+
+			run(t, projectDir, "go", "test", "./...")
+			if example != "minimal" {
+				run(t, projectDir, "go", "run", "./cmd/compute-module", "local", "--input", "data/input.csv", "--output", "out/output.csv")
+				if _, err := os.Stat(filepath.Join(projectDir, "out/output.csv")); err != nil {
+					t.Fatalf("expected local output csv: %v", err)
+				}
+			}
+		})
 	}
 }
 
@@ -51,6 +56,36 @@ func TestGenerateProjectRejectsNonEmptyTargetUnlessForced(t *testing.T) {
 	_, err := GenerateProject(GenerateOptions{Name: "starter", Module: "example.com/acme/starter", Dir: dir})
 	if err == nil || !strings.Contains(err.Error(), "not empty") {
 		t.Fatalf("expected non-empty target error, got %v", err)
+	}
+}
+
+func assertGeneratedFiles(t *testing.T, projectDir, example string) {
+	t.Helper()
+	files := []string{"go.mod", "README.md", "Dockerfile", "cmd/compute-module/main.go", "processor/processor.go", "processor/processor_test.go", ".gitignore"}
+	if example != "minimal" {
+		files = append(files,
+			"docker-compose.local.yml",
+			"pipeline/csv.go",
+			"pipeline/pipeline_test.go",
+			"test/fixtures/alias-map.json",
+			"test/fixtures/token.txt",
+			"data/input.csv",
+		)
+	}
+	for _, rel := range files {
+		if _, err := os.Stat(filepath.Join(projectDir, rel)); err != nil {
+			t.Fatalf("expected generated file %s: %v", rel, err)
+		}
+	}
+}
+
+func run(t *testing.T, dir string, name string, args ...string) {
+	t.Helper()
+	cmd := exec.Command(name, args...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("%s %s failed: %v\n%s", name, strings.Join(args, " "), err, out)
 	}
 }
 

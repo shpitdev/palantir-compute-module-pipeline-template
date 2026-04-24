@@ -1,0 +1,26 @@
+services:
+  mock-foundry:
+    image: golang:1.25.8-alpine
+    environment:
+      MOCK_FOUNDRY_ADDR: ":8080"
+      MOCK_FOUNDRY_INPUT_DIR: "/data/inputs"
+      MOCK_FOUNDRY_UPLOAD_DIR: "/data/uploads"
+      MOCK_FOUNDRY_STREAM_RIDS: "{{if .IsStream}}ri.foundry.main.dataset.22222222-2222-2222-2222-222222222222{{end}}"
+    volumes:
+      - ./.local/mock-foundry/inputs:/data/inputs:ro
+      - ./.local/mock-foundry/uploads:/data/uploads
+    command: ["go", "run", "github.com/palantir/palantir-compute-module-pipeline-search/cmd/mock-foundry@v{{.PipelineVersion}}"]
+
+  compute-module:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      - mock-foundry
+    environment:
+      FOUNDRY_URL: "http://mock-foundry:8080"
+      BUILD2_TOKEN: "/fixtures/token.txt"
+      RESOURCE_ALIAS_MAP: "/fixtures/alias-map.json"
+    volumes:
+      - ./test/fixtures:/fixtures:ro
+    command: ["foundry", "--output-mode", "{{.OutputMode}}"]

@@ -5,7 +5,7 @@ go 1.25.8
 require github.com/palantir/palantir-compute-module-pipeline-search v0.0.0
 
 require (
-	golang.org/x/time v0.14.0 // indirect
+	golang.org/x/time v0.15.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 

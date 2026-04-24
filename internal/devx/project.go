@@ -14,7 +14,7 @@ import (
 	internalversion "github.com/palantir/palantir-compute-module-pipeline-search/internal/version"
 )
 
-//go:embed templates/minimal
+//go:embed templates/*
 var starterTemplates embed.FS
 
 var modulePathPattern = regexp.MustCompile(`^[A-Za-z0-9._~\-]+(/[A-Za-z0-9._~\-]+)*$`)
@@ -37,6 +37,9 @@ type GenerateResult struct {
 type templateData struct {
 	Name            string
 	Module          string
+	Example         string
+	OutputMode      string
+	IsStream        bool
 	PipelineVersion string
 	LocalReplace    string
 }
@@ -52,8 +55,9 @@ func GenerateProject(opts GenerateOptions) (GenerateResult, error) {
 	if opts.Example == "" {
 		opts.Example = "minimal"
 	}
-	if opts.Example != "minimal" {
-		return GenerateResult{}, fmt.Errorf("unsupported example %q (expected minimal)", opts.Example)
+	root, outputMode, err := templateRoot(opts.Example)
+	if err != nil {
+		return GenerateResult{}, err
 	}
 	if opts.Name == "" {
 		return GenerateResult{}, fmt.Errorf("project name is required")
@@ -85,10 +89,12 @@ func GenerateProject(opts GenerateOptions) (GenerateResult, error) {
 	data := templateData{
 		Name:            opts.Name,
 		Module:          opts.Module,
+		Example:         opts.Example,
+		OutputMode:      outputMode,
+		IsStream:        outputMode == "stream",
 		PipelineVersion: opts.PipelineVersion,
 		LocalReplace:    filepath.ToSlash(opts.LocalReplace),
 	}
-	root := "templates/minimal"
 	var written []string
 	err = fs.WalkDir(starterTemplates, root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -138,6 +144,19 @@ func GenerateProject(opts GenerateOptions) (GenerateResult, error) {
 		return GenerateResult{}, err
 	}
 	return GenerateResult{Dir: absDir, Files: written}, nil
+}
+
+func templateRoot(example string) (root string, outputMode string, err error) {
+	switch example {
+	case "minimal":
+		return "templates/minimal", "dataset", nil
+	case "dataset":
+		return "templates/foundry", "dataset", nil
+	case "stream":
+		return "templates/foundry", "stream", nil
+	default:
+		return "", "", fmt.Errorf("unsupported example %q (expected minimal|dataset|stream)", example)
+	}
 }
 
 func ensureWritableTarget(dir string, force bool) error {

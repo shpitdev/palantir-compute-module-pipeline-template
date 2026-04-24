@@ -1,0 +1,40 @@
+package pipeline
+
+import (
+	"encoding/csv"
+	"io"
+
+	"{{.Module}}/processor"
+)
+
+type Row struct {
+	Email  string
+	Value  string
+	Status string
+}
+
+func RowFromResult(result processor.Result) Row {
+	return Row{Email: result.Input, Value: result.Value, Status: "ok"}
+}
+
+func StreamRecord(row Row) map[string]any {
+	return map[string]any{
+		"email":  row.Email,
+		"value":  row.Value,
+		"status": row.Status,
+	}
+}
+
+func WriteCSV(w io.Writer, rows []Row) error {
+	cw := csv.NewWriter(w)
+	if err := cw.Write([]string{"email", "value", "status"}); err != nil {
+		return err
+	}
+	for _, row := range rows {
+		if err := cw.Write([]string{row.Email, row.Value, row.Status}); err != nil {
+			return err
+		}
+	}
+	cw.Flush()
+	return cw.Error()
+}
