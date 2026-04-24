@@ -456,7 +456,8 @@ main() {
       fi
       ./godelw verify --apply=false "$@"
       ./test/scripts/verify_public_modules.sh
-      exec ./test/scripts/dev_cli_test.sh
+      ./test/scripts/dev_cli_test.sh
+      exec ./test/scripts/foundry_cmgo_dev_shim_test.sh
       ;;
     test)
       shift
