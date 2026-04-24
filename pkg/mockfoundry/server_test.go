@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/csv"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -53,6 +54,245 @@ func TestMockFoundry_CommitUpdatesReadTable(t *testing.T) {
 	if !bytes.Equal(got, want) {
 		t.Fatalf("readTable output mismatch:\n--- got ---\n%s\n--- want ---\n%s\n", string(got), string(want))
 	}
+}
+
+func TestMockFoundry_ReadTableUsesBranchScopedCommittedViews(t *testing.T) {
+	t.Parallel()
+
+	inputDir := t.TempDir()
+	uploadDir := t.TempDir()
+
+	srv := mockfoundry.New(inputDir, uploadDir)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	client, err := foundry.NewClient(ts.URL+"/api", ts.URL+"/stream-proxy/api", "dummy-token", "")
+	if err != nil {
+		t.Fatalf("new foundry client: %v", err)
+	}
+
+	ctx := context.Background()
+	datasetRID := "ri.foundry.main.dataset.12121212-1212-1212-1212-121212121212"
+
+	masterCSV := []byte("email\nmaster@example.com\n")
+	masterTxn := createUploadCommit(t, ctx, client, datasetRID, "master", "enriched.csv", masterCSV)
+
+	devCSV := []byte("email\ndev@example.com\n")
+	devTxn := createUploadCommit(t, ctx, client, datasetRID, "dev", "enriched.csv", devCSV)
+	if masterTxn == devTxn {
+		t.Fatalf("expected unique transaction rids, got %q", masterTxn)
+	}
+
+	gotMaster, err := client.ReadTableCSV(ctx, datasetRID, "master")
+	if err != nil {
+		t.Fatalf("read master branch: %v", err)
+	}
+	if !bytes.Equal(gotMaster, masterCSV) {
+		t.Fatalf("master readTable mismatch:\n--- got ---\n%s\n--- want ---\n%s\n", gotMaster, masterCSV)
+	}
+
+	gotDev, err := client.ReadTableCSV(ctx, datasetRID, "dev")
+	if err != nil {
+		t.Fatalf("read dev branch: %v", err)
+	}
+	if !bytes.Equal(gotDev, devCSV) {
+		t.Fatalf("dev readTable mismatch:\n--- got ---\n%s\n--- want ---\n%s\n", gotDev, devCSV)
+	}
+}
+
+func TestMockFoundry_ReadTableCanPinExactCommittedTransaction(t *testing.T) {
+	t.Parallel()
+
+	inputDir := t.TempDir()
+	uploadDir := t.TempDir()
+
+	srv := mockfoundry.New(inputDir, uploadDir)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	client, err := foundry.NewClient(ts.URL+"/api", ts.URL+"/stream-proxy/api", "dummy-token", "")
+	if err != nil {
+		t.Fatalf("new foundry client: %v", err)
+	}
+
+	ctx := context.Background()
+	datasetRID := "ri.foundry.main.dataset.34343434-3434-3434-3434-343434343434"
+
+	firstCSV := []byte("email\nfirst@example.com\n")
+	firstTxn := createUploadCommit(t, ctx, client, datasetRID, "master", "enriched.csv", firstCSV)
+
+	secondCSV := []byte("email\nsecond@example.com\n")
+	_ = createUploadCommit(t, ctx, client, datasetRID, "master", "enriched.csv", secondCSV)
+
+	resp, err := http.Get(ts.URL + "/api/v2/datasets/" + datasetRID + "/readTable?branchName=master&startTransactionRid=" + firstTxn + "&endTransactionRid=" + firstTxn + "&format=CSV")
+	if err != nil {
+		t.Fatalf("read exact transaction: %v", err)
+	}
+	defer func() {
+		_ = resp.Body.Close()
+	}()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d want 200", resp.StatusCode)
+	}
+	var buf bytes.Buffer
+	if _, err := buf.ReadFrom(resp.Body); err != nil {
+		t.Fatalf("read response body: %v", err)
+	}
+	if !bytes.Equal(buf.Bytes(), firstCSV) {
+		t.Fatalf("exact transaction read mismatch:\n--- got ---\n%s\n--- want ---\n%s\n", buf.Bytes(), firstCSV)
+	}
+}
+
+func TestMockFoundry_OpenTransactionsDoNotAdvanceBranchView(t *testing.T) {
+	t.Parallel()
+
+	inputDir := t.TempDir()
+	uploadDir := t.TempDir()
+
+	srv := mockfoundry.New(inputDir, uploadDir)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	client, err := foundry.NewClient(ts.URL+"/api", ts.URL+"/stream-proxy/api", "dummy-token", "")
+	if err != nil {
+		t.Fatalf("new foundry client: %v", err)
+	}
+
+	ctx := context.Background()
+	datasetRID := "ri.foundry.main.dataset.56565656-5656-5656-5656-565656565656"
+
+	committed := []byte("email\ncommitted@example.com\n")
+	committedTxn := createUploadCommit(t, ctx, client, datasetRID, "master", "enriched.csv", committed)
+
+	openTxn, err := client.CreateTransaction(ctx, datasetRID, "master")
+	if err != nil {
+		t.Fatalf("create open transaction: %v", err)
+	}
+	if err := client.UploadFile(ctx, datasetRID, openTxn, "enriched.csv", "text/csv", []byte("email\nopen@example.com\n")); err != nil {
+		t.Fatalf("upload to open transaction: %v", err)
+	}
+
+	branchTxn, err := client.GetBranchTransactionRID(ctx, datasetRID, "master")
+	if err != nil {
+		t.Fatalf("get branch transaction: %v", err)
+	}
+	if branchTxn != committedTxn {
+		t.Fatalf("branch head transaction = %q, want committed transaction %q", branchTxn, committedTxn)
+	}
+
+	got, err := client.ReadTableCSV(ctx, datasetRID, "master")
+	if err != nil {
+		t.Fatalf("read committed branch view: %v", err)
+	}
+	if !bytes.Equal(got, committed) {
+		t.Fatalf("open transaction leaked into branch view:\n--- got ---\n%s\n--- want ---\n%s\n", got, committed)
+	}
+}
+
+func TestMockFoundry_ListTransactionsPreservesBranchForOpenTransactionReuse(t *testing.T) {
+	t.Parallel()
+
+	inputDir := t.TempDir()
+	uploadDir := t.TempDir()
+
+	srv := mockfoundry.New(inputDir, uploadDir)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	client, err := foundry.NewClient(ts.URL+"/api", ts.URL+"/stream-proxy/api", "dummy-token", "")
+	if err != nil {
+		t.Fatalf("new foundry client: %v", err)
+	}
+
+	ctx := context.Background()
+	datasetRID := "ri.foundry.main.dataset.78787878-7878-7878-7878-787878787878"
+
+	masterTxn, err := client.CreateTransaction(ctx, datasetRID, "master")
+	if err != nil {
+		t.Fatalf("create master transaction: %v", err)
+	}
+	featureTxn, err := client.CreateTransaction(ctx, datasetRID, "feature")
+	if err != nil {
+		t.Fatalf("create feature transaction: %v", err)
+	}
+	if masterTxn == featureTxn {
+		t.Fatalf("expected distinct transactions, got %q", masterTxn)
+	}
+
+	got, ok, err := client.FindLatestOpenTransactionForBranch(ctx, datasetRID, "master")
+	if err != nil {
+		t.Fatalf("find latest open transaction for master: %v", err)
+	}
+	if !ok {
+		t.Fatalf("expected an open transaction for master")
+	}
+	if got != masterTxn {
+		t.Fatalf("latest master open transaction = %q, want %q", got, masterTxn)
+	}
+}
+
+func TestMockFoundry_MissingDatasetViewIsDistinctFromAuthFailure(t *testing.T) {
+	t.Parallel()
+
+	inputDir := t.TempDir()
+	uploadDir := t.TempDir()
+
+	srv := mockfoundry.New(inputDir, uploadDir)
+	srv.RequireBearerToken("dummy-token")
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	datasetRID := "ri.foundry.main.dataset.90909090-9090-9090-9090-909090909090"
+
+	resp, err := http.Get(ts.URL + "/api/v2/datasets/" + datasetRID + "/readTable?branchName=master")
+	if err != nil {
+		t.Fatalf("unauthenticated read: %v", err)
+	}
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated status=%d want 401", resp.StatusCode)
+	}
+	_ = resp.Body.Close()
+
+	req, err := http.NewRequest(http.MethodGet, ts.URL+"/api/v2/datasets/"+datasetRID+"/readTable?branchName=master", nil)
+	if err != nil {
+		t.Fatalf("new read request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer dummy-token")
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("authorized missing view read: %v", err)
+	}
+	defer func() {
+		_ = resp.Body.Close()
+	}()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("missing view status=%d want 404", resp.StatusCode)
+	}
+	var body struct {
+		ErrorName string `json:"errorName"`
+		ErrorCode string `json:"errorCode"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode error body: %v", err)
+	}
+	if body.ErrorName != "DatasetViewNotFound" || body.ErrorCode != "NOT_FOUND" {
+		t.Fatalf("unexpected missing view error: %#v", body)
+	}
+}
+
+func createUploadCommit(t *testing.T, ctx context.Context, client *foundry.Client, datasetRID, branch, filePath string, csvBytes []byte) string {
+	t.Helper()
+	txnID, err := client.CreateTransaction(ctx, datasetRID, branch)
+	if err != nil {
+		t.Fatalf("create transaction branch=%q: %v", branch, err)
+	}
+	if err := client.UploadFile(ctx, datasetRID, txnID, filePath, "text/csv", csvBytes); err != nil {
+		t.Fatalf("upload file branch=%q txn=%q: %v", branch, txnID, err)
+	}
+	if err := client.CommitTransaction(ctx, datasetRID, txnID); err != nil {
+		t.Fatalf("commit transaction branch=%q txn=%q: %v", branch, txnID, err)
+	}
+	return txnID
 }
 
 func TestMockFoundry_StreamReadTableUsesConfiguredHeader(t *testing.T) {

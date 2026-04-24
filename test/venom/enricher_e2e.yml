@@ -97,7 +97,7 @@ testcases:
     script: |
       set -eu
       cd "$(git rev-parse --show-toplevel)"
-      csv_path="test/artifacts/mock-foundry/uploads/{{.output.rid}}/_committed/readTable.csv"
+      csv_path="test/artifacts/mock-foundry/uploads/{{.output.rid}}/_branches/master/_committed/readTable.csv"
       test -f "${csv_path}"
       if tail -n +2 "${csv_path}" | grep -q ',error,'; then
         echo "committed output contains error rows:" >&2

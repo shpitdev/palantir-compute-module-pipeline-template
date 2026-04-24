@@ -47,9 +47,10 @@ type Server struct {
 	nextTxn int
 	txns    map[string]txnState
 
-	// heads stores the last committed dataset contents per dataset RID.
-	// This allows read-after-write flows via the same readTable endpoint.
-	heads map[string][]byte
+	// heads stores the last committed dataset view per dataset RID and branch.
+	// This allows read-after-write flows via the same readTable endpoint without
+	// leaking committed contents across branches.
+	heads map[datasetBranchKey]datasetView
 
 	// streams tracks stream-proxy records per stream RID and branch.
 	// A RID is considered a "stream" if it exists as a key in this map.
@@ -79,6 +80,16 @@ type txnState struct {
 	files map[string][]byte
 }
 
+type datasetBranchKey struct {
+	datasetRID string
+	branch     string
+}
+
+type datasetView struct {
+	txnID string
+	csv   []byte
+}
+
 // New constructs a new mock server.
 func New(inputDir, uploadDir string) *Server {
 	return &Server{
@@ -86,7 +97,7 @@ func New(inputDir, uploadDir string) *Server {
 		uploadDir: uploadDir,
 		nextTxn:   1,
 		txns:      make(map[string]txnState),
-		heads:     make(map[string][]byte),
+		heads:     make(map[datasetBranchKey]datasetView),
 		streams:   make(map[string]map[string][]map[string]any),
 	}
 }
@@ -463,27 +474,16 @@ func (s *Server) handleV2Datasets(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
 		}
-		branchName := strings.TrimSpace(parts[2])
-		if branchName == "" {
-			branchName = "master"
-		}
+		branchName := normalizeBranch(parts[2])
 
-		// Best-effort: return the most recent OPEN/COMMITTED transaction RID if one exists.
-		// If the dataset has never had a transaction created in the mock, return a stable dummy RID.
+		// Return the committed branch head when one exists. Open transactions are
+		// intentionally not exposed as the branch view because readTable callers use
+		// this RID to pin deterministic reads; uncommitted uploads should not be
+		// visible through the branch head.
 		latestTxnRID := ""
-		var latestTime time.Time
 		s.mu.Lock()
-		for txnID, st := range s.txns {
-			if st.datasetRID != rid {
-				continue
-			}
-			if strings.TrimSpace(st.branch) != branchName {
-				continue
-			}
-			if latestTxnRID == "" || st.createdAt.After(latestTime) {
-				latestTxnRID = txnID
-				latestTime = st.createdAt
-			}
+		if head, ok := s.heads[datasetBranchKey{datasetRID: rid, branch: branchName}]; ok {
+			latestTxnRID = strings.TrimSpace(head.txnID)
 		}
 		s.mu.Unlock()
 		if strings.TrimSpace(latestTxnRID) == "" {
@@ -551,13 +551,7 @@ func (s *Server) serveReadTableCSV(w http.ResponseWriter, r *http.Request, datas
 	_, isStream := s.streams[datasetRID]
 	s.mu.Unlock()
 	if isStream {
-		branch := strings.TrimSpace(r.URL.Query().Get("branchName"))
-		if branch == "" {
-			branch = strings.TrimSpace(r.URL.Query().Get("branchId"))
-		}
-		if branch == "" {
-			branch = "master"
-		}
+		branch := branchFromReadTableQuery(r)
 
 		recs := s.StreamRecords(datasetRID, branch)
 		header := s.streamReadTableHeaderFor(recs)
@@ -596,47 +590,114 @@ func (s *Server) serveReadTableCSV(w http.ResponseWriter, r *http.Request, datas
 		return
 	}
 
-	branchID := strings.TrimSpace(r.URL.Query().Get("branchId"))
-	branchName := strings.TrimSpace(r.URL.Query().Get("branchName"))
-	if branchID == "" && branchName != "" {
-		branchID = branchName
-	}
-
-	// Prefer the last committed dataset head (API read-after-write), if present.
-	s.mu.Lock()
-	head, ok := s.heads[datasetRID]
-	s.mu.Unlock()
-	if ok && len(head) > 0 {
-		w.Header().Set("Content-Type", "text/csv")
-		_, _ = w.Write(head)
-		return
-	}
-
-	// If the server restarted, allow the committed head to be reloaded from disk.
-	committedPath := s.committedTablePath(datasetRID)
-	if b, err := os.ReadFile(committedPath); err == nil && len(b) > 0 {
-		s.mu.Lock()
-		// Cache for future reads.
-		s.heads[datasetRID] = b
-		s.mu.Unlock()
-
+	branch := branchFromReadTableQuery(r)
+	startTxn := strings.TrimSpace(r.URL.Query().Get("startTransactionRid"))
+	endTxn := strings.TrimSpace(r.URL.Query().Get("endTransactionRid"))
+	if b, ok := s.datasetViewCSV(datasetRID, branch, startTxn, endTxn); ok {
 		w.Header().Set("Content-Type", "text/csv")
 		_, _ = w.Write(b)
 		return
 	}
 
-	p := filepath.Join(s.inputDir, datasetRID+".csv")
-	b, err := os.ReadFile(p)
-	if err != nil {
-		writeAPIError(w, http.StatusNotFound, "SchemaNotFound", "NOT_FOUND", map[string]any{
-			"datasetRid":     datasetRID,
-			"branchId":       branchID,
-			"transactionRid": "",
-		})
-		return
+	writeAPIError(w, http.StatusNotFound, "DatasetViewNotFound", "NOT_FOUND", map[string]any{
+		"datasetRid":          datasetRID,
+		"branchName":          branch,
+		"startTransactionRid": startTxn,
+		"endTransactionRid":   endTxn,
+	})
+}
+
+func (s *Server) datasetViewCSV(datasetRID, branch, startTxn, endTxn string) ([]byte, bool) {
+	branch = normalizeBranch(branch)
+	startTxn = strings.TrimSpace(startTxn)
+	endTxn = strings.TrimSpace(endTxn)
+
+	if startTxn != "" || endTxn != "" {
+		txnID := endTxn
+		if txnID == "" {
+			txnID = startTxn
+		}
+		if startTxn != "" && endTxn != "" && startTxn != endTxn {
+			// Parity v1 does not implement a full transaction-range engine. Treat
+			// the end transaction as the resolved view boundary; callers that need
+			// exact transaction behavior can set start==end.
+			txnID = endTxn
+		}
+		if b, ok := s.committedTransactionCSV(datasetRID, branch, txnID); ok {
+			return b, true
+		}
+
+		// Local seed datasets do not have real transaction history. Preserve the
+		// branch endpoint's stable dummy transaction so client-side transaction
+		// pinning still works for fixture-backed and disk-reloaded reads.
+		if txnID == "ri.foundry.main.transaction.mock" {
+			if b, ok := s.branchHeadCSV(datasetRID, branch); ok {
+				return b, true
+			}
+			return s.seedDatasetCSV(datasetRID)
+		}
+		return nil, false
 	}
-	w.Header().Set("Content-Type", "text/csv")
-	_, _ = w.Write(b)
+
+	if b, ok := s.branchHeadCSV(datasetRID, branch); ok {
+		return b, true
+	}
+	return s.seedDatasetCSV(datasetRID)
+}
+
+func (s *Server) committedTransactionCSV(datasetRID, branch, txnID string) ([]byte, bool) {
+	txnID = strings.TrimSpace(txnID)
+	if txnID == "" {
+		return nil, false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	txn, ok := s.txns[txnID]
+	if !ok || txn.datasetRID != datasetRID || normalizeBranch(txn.branch) != branch || !txn.committed {
+		return nil, false
+	}
+	return singleTransactionFile(txn)
+}
+
+func (s *Server) branchHeadCSV(datasetRID, branch string) ([]byte, bool) {
+	key := datasetBranchKey{datasetRID: datasetRID, branch: branch}
+	s.mu.Lock()
+	if head, ok := s.heads[key]; ok && len(head.csv) > 0 {
+		out := append([]byte(nil), head.csv...)
+		s.mu.Unlock()
+		return out, true
+	}
+	s.mu.Unlock()
+
+	if b, ok := readNonEmptyFile(s.committedTablePath(datasetRID, branch)); ok {
+		s.mu.Lock()
+		s.heads[key] = datasetView{csv: b}
+		s.mu.Unlock()
+		return b, true
+	}
+	return nil, false
+}
+
+func (s *Server) seedDatasetCSV(datasetRID string) ([]byte, bool) {
+	return readNonEmptyFile(filepath.Join(s.inputDir, datasetRID+".csv"))
+}
+
+func singleTransactionFile(txn txnState) ([]byte, bool) {
+	if len(txn.files) != 1 {
+		return nil, false
+	}
+	for _, b := range txn.files {
+		return append([]byte(nil), b...), true
+	}
+	return nil, false
+}
+
+func readNonEmptyFile(p string) ([]byte, bool) {
+	b, err := os.ReadFile(p)
+	if err != nil || len(b) == 0 {
+		return nil, false
+	}
+	return b, true
 }
 
 type createTxnReq struct {
@@ -646,6 +707,7 @@ type createTxnReq struct {
 
 type transactionResp struct {
 	RID             string  `json:"rid"`
+	BranchName      string  `json:"branchName,omitempty"`
 	TransactionType string  `json:"transactionType"`
 	Status          string  `json:"status"`
 	CreatedTime     string  `json:"createdTime"`
@@ -682,6 +744,10 @@ func (s *Server) handleListTransactions(w http.ResponseWriter, r *http.Request, 
 		if st.datasetRID != datasetRID {
 			continue
 		}
+		branchFilter := normalizeBranch(r.URL.Query().Get("branchName"))
+		if strings.TrimSpace(r.URL.Query().Get("branchName")) != "" && normalizeBranch(st.branch) != branchFilter {
+			continue
+		}
 		createdTime := st.createdAt.UTC().Format(time.RFC3339Nano)
 		var closedTime *string
 		if st.closedAt != nil {
@@ -695,6 +761,7 @@ func (s *Server) handleListTransactions(w http.ResponseWriter, r *http.Request, 
 		items = append(items, item{
 			resp: transactionResp{
 				RID:             txnID,
+				BranchName:      normalizeBranch(st.branch),
 				TransactionType: st.txType,
 				Status:          status,
 				CreatedTime:     createdTime,
@@ -749,15 +816,12 @@ func (s *Server) handleCreateTransaction(w http.ResponseWriter, r *http.Request,
 	}
 
 	s.mu.Lock()
-	branch := strings.TrimSpace(r.URL.Query().Get("branchName"))
-	if branch == "" {
-		branch = strings.TrimSpace(r.URL.Query().Get("branchId"))
+	branch := normalizeBranch(r.URL.Query().Get("branchName"))
+	if strings.TrimSpace(r.URL.Query().Get("branchName")) == "" {
+		branch = normalizeBranch(r.URL.Query().Get("branchId"))
 	}
-	if branch == "" {
-		branch = strings.TrimSpace(req.Branch)
-	}
-	if branch == "" {
-		branch = "master"
+	if strings.TrimSpace(r.URL.Query().Get("branchName")) == "" && strings.TrimSpace(r.URL.Query().Get("branchId")) == "" {
+		branch = normalizeBranch(req.Branch)
 	}
 
 	for _, t := range s.txns {
@@ -791,6 +855,7 @@ func (s *Server) handleCreateTransaction(w http.ResponseWriter, r *http.Request,
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(transactionResp{
 		RID:             txnID,
+		BranchName:      branch,
 		TransactionType: txType,
 		Status:          "OPEN",
 		CreatedTime:     createdAt.Format(time.RFC3339Nano),
@@ -951,8 +1016,11 @@ func (s *Server) handleCommit(w http.ResponseWriter, _ *http.Request, datasetRID
 	}
 	s.mu.Unlock()
 
-	// Persist a "dataset head" so downstream consumers can read the committed state via readTable.
-	committedPath := s.committedTablePath(datasetRID)
+	branch := normalizeBranch(txn.branch)
+
+	// Persist a branch-scoped "dataset head" so downstream consumers can read the
+	// committed state via readTable without cross-branch leakage.
+	committedPath := s.committedTablePath(datasetRID, branch)
 	if err := os.MkdirAll(filepath.Dir(committedPath), 0755); err != nil {
 		writeAPIError(w, http.StatusInternalServerError, "Default:Internal", "INTERNAL", map[string]any{
 			"message": "mkdir committed dir",
@@ -990,7 +1058,10 @@ func (s *Server) handleCommit(w http.ResponseWriter, _ *http.Request, datasetRID
 	txn.committed = true
 	txn.closedAt = &closedAt
 	s.txns[txnID] = txn
-	s.heads[datasetRID] = head
+	s.heads[datasetBranchKey{datasetRID: datasetRID, branch: branch}] = datasetView{
+		txnID: txnID,
+		csv:   append([]byte(nil), head...),
+	}
 	s.mu.Unlock()
 
 	w.Header().Set("Content-Type", "application/json")
@@ -1002,6 +1073,7 @@ func (s *Server) handleCommit(w http.ResponseWriter, _ *http.Request, datasetRID
 	}
 	_ = json.NewEncoder(w).Encode(transactionResp{
 		RID:             txnID,
+		BranchName:      branch,
 		TransactionType: txn.txType,
 		Status:          "COMMITTED",
 		CreatedTime:     createdTime,
@@ -1009,9 +1081,9 @@ func (s *Server) handleCommit(w http.ResponseWriter, _ *http.Request, datasetRID
 	})
 }
 
-func (s *Server) committedTablePath(datasetRID string) string {
+func (s *Server) committedTablePath(datasetRID, branch string) string {
 	// Keep this stable and human-inspectable for local harness use.
-	return filepath.Join(s.uploadDir, datasetRID, "_committed", "readTable.csv")
+	return filepath.Join(s.uploadDir, datasetRID, "_branches", filesystemName(normalizeBranch(branch)), "_committed", "readTable.csv")
 }
 
 func (s *Server) streamReadTableHeaderFor(recs []map[string]any) []string {
@@ -1047,6 +1119,49 @@ func copyNonEmptyStrings(vals []string) []string {
 			continue
 		}
 		out = append(out, val)
+	}
+	return out
+}
+
+func branchFromReadTableQuery(r *http.Request) string {
+	branch := strings.TrimSpace(r.URL.Query().Get("branchName"))
+	if branch == "" {
+		branch = strings.TrimSpace(r.URL.Query().Get("branchId"))
+	}
+	return normalizeBranch(branch)
+}
+
+func normalizeBranch(branch string) string {
+	branch = strings.TrimSpace(branch)
+	if branch == "" {
+		return "master"
+	}
+	return branch
+}
+
+func filesystemName(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "master"
+	}
+	var b strings.Builder
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z':
+			_ = b.WriteByte(byte(r))
+		case r >= 'A' && r <= 'Z':
+			_ = b.WriteByte(byte(r))
+		case r >= '0' && r <= '9':
+			_ = b.WriteByte(byte(r))
+		case r == '.' || r == '-' || r == '_':
+			_, _ = b.WriteRune(r)
+		default:
+			_ = b.WriteByte('_')
+		}
+	}
+	out := strings.Trim(b.String(), "._-")
+	if out == "" || out == ".." {
+		return "branch"
 	}
 	return out
 }
