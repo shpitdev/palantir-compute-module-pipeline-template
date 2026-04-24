@@ -1,0 +1,21 @@
+package main
+
+import (
+	"context"
+	"fmt"
+
+	"{{.Module}}/processor"
+	"github.com/palantir/palantir-compute-module-pipeline-search/pkg/pipeline/core"
+	"github.com/palantir/palantir-compute-module-pipeline-search/pkg/pipeline/worker"
+)
+
+func main() {
+	p := processor.Processor{}
+	runner := core.ProcessFunc[string, processor.Result](p.Process)
+
+	out, err := worker.ProcessAll(context.Background(), []string{"local-record"}, runner.Process, worker.Options{Workers: 1})
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println(out[0].Output.Value)
+}

@@ -1,0 +1,10 @@
+FROM golang:1.25.8-alpine AS build
+WORKDIR /src
+COPY go.mod go.sum* ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 go build -o /out/compute-module ./cmd/compute-module
+
+FROM alpine:3.22
+COPY --from=build /out/compute-module /usr/local/bin/compute-module
+ENTRYPOINT ["compute-module"]

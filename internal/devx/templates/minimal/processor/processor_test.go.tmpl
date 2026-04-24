@@ -1,0 +1,18 @@
+package processor
+
+import (
+	"context"
+	"testing"
+)
+
+func TestProcessor(t *testing.T) {
+	t.Parallel()
+
+	out, err := (Processor{}).Process(context.Background(), " alice ")
+	if err != nil {
+		t.Fatalf("Process failed: %v", err)
+	}
+	if out.Value != "ALICE" {
+		t.Fatalf("unexpected value: %q", out.Value)
+	}
+}

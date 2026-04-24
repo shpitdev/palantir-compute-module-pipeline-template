@@ -1,0 +1,10 @@
+module {{.Module}}
+
+go 1.25.8
+
+require github.com/palantir/palantir-compute-module-pipeline-search v{{.PipelineVersion}}
+
+require golang.org/x/time v0.14.0 // indirect
+{{if .LocalReplace}}
+replace github.com/palantir/palantir-compute-module-pipeline-search => {{.LocalReplace}}
+{{end}}
