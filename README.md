@@ -120,7 +120,7 @@ GEMINI_API_KEY=...
 4. Read latest committed output at:
 
 ```bash
-.local/mock-foundry/uploads/ri.foundry.main.dataset.22222222-2222-2222-2222-222222222222/_committed/readTable.csv
+.local/mock-foundry/uploads/ri.foundry.main.dataset.22222222-2222-2222-2222-222222222222/_branches/master/_committed/readTable.csv
 ```
 
 5. Change and save the input CSV again to trigger another run.

@@ -319,7 +319,7 @@ output_rid_from_alias_map() {
 
 committed_output_csv_path() {
   local output_rid="$1"
-  printf '%s/%s/_committed/readTable.csv' "${LOCAL_UPLOAD_DIR}" "${output_rid}"
+  printf '%s/%s/_branches/master/_committed/readTable.csv' "${LOCAL_UPLOAD_DIR}" "${output_rid}"
 }
 
 file_signature() {

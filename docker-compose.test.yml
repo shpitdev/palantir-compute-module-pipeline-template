@@ -5,7 +5,7 @@
 #   GEMINI_MODEL
 #
 # Outputs:
-#   test/artifacts/mock-foundry/uploads/<OUTPUT_RID>/_committed/readTable.csv
+#   test/artifacts/mock-foundry/uploads/<OUTPUT_RID>/_branches/master/_committed/readTable.csv
 services:
   mock-foundry:
     image: palantir-compute-module-pipeline-search/mock-foundry:e2e

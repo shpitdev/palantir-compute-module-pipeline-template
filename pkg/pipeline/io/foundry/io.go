@@ -100,7 +100,7 @@ func UploadDatasetCSV(ctx context.Context, client *foundry.Client, outputRef fou
 		var ok bool
 		err = RetryTransient(ctx, DefaultRetryPolicy, func() error {
 			var err error
-			txnID, ok, err = client.FindLatestOpenTransaction(ctx, outputRef.RID)
+			txnID, ok, err = client.FindLatestOpenTransactionForBranch(ctx, outputRef.RID, outputRef.Branch)
 			return err
 		})
 		if err != nil {

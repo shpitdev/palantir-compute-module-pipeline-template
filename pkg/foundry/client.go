@@ -474,6 +474,7 @@ func (c *Client) CreateTransaction(ctx context.Context, datasetRID, branch strin
 
 type Transaction struct {
 	TransactionType string  `json:"transactionType"`
+	BranchName      string  `json:"branchName,omitempty"`
 	CreatedTime     string  `json:"createdTime"`
 	RID             string  `json:"rid"`
 	ClosedTime      *string `json:"closedTime,omitempty"`
@@ -535,6 +536,19 @@ func (c *Client) ListTransactions(ctx context.Context, datasetRID string, pageSi
 //
 // Foundry documents that ListTransactions returns reverse chronological order, so the first OPEN is the most recent.
 func (c *Client) FindLatestOpenTransaction(ctx context.Context, datasetRID string) (string, bool, error) {
+	return c.FindLatestOpenTransactionForBranch(ctx, datasetRID, "")
+}
+
+// FindLatestOpenTransactionForBranch returns the RID of the latest OPEN transaction for a dataset branch.
+//
+// Some Foundry transaction-list responses include branchName and some older/mocked responses may not.
+// When branchName is present, this method filters on it so branch-scoped open transaction conflicts do
+// not accidentally reuse an OPEN transaction from a different branch.
+func (c *Client) FindLatestOpenTransactionForBranch(ctx context.Context, datasetRID, branch string) (string, bool, error) {
+	branch = strings.TrimSpace(branch)
+	if branch == "" {
+		branch = "master"
+	}
 	pageToken := ""
 	for i := 0; i < 5; i++ {
 		txns, next, err := c.ListTransactions(ctx, datasetRID, 100, pageToken)
@@ -542,6 +556,9 @@ func (c *Client) FindLatestOpenTransaction(ctx context.Context, datasetRID strin
 			return "", false, err
 		}
 		for _, t := range txns {
+			if strings.TrimSpace(t.BranchName) != "" && !strings.EqualFold(strings.TrimSpace(t.BranchName), branch) {
+				continue
+			}
 			if strings.EqualFold(strings.TrimSpace(t.Status), "OPEN") && strings.TrimSpace(t.RID) != "" {
 				return strings.TrimSpace(t.RID), true, nil
 			}

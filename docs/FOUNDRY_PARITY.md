@@ -831,6 +831,7 @@ The parity contract is now reflected in the code through these boundaries:
 | Foundry retry policy for dataset and stream I/O | `pkg/pipeline/io/foundry/retry.go` | Implemented |
 | Incremental cache planning and row selection | `internal/app/incremental.go` | Implemented, app-local |
 | Mock stream readTable header projection | `pkg/mockfoundry/server.go` with caller-supplied header | Implemented |
+| Mock dataset branch heads, exact transaction reads, and open transaction branch reuse | `pkg/mockfoundry/server.go`, `pkg/foundry/client.go` | Implemented for template scope |
 
 The app runner should stay focused on orchestration. Stream codecs, retry policy, and incremental merge helpers should not be reintroduced into `internal/app/enricher.go`.
 
@@ -848,7 +849,7 @@ Do not switch the default backend without evidence that the target compute-modul
 
 ## 13.2 Dataset-view history fidelity
 
-The mock server supports the dataset transaction behavior this template uses, but it does not implement a full historical Foundry dataset-view engine. In particular, exact transaction-range behavior, snapshot reset handling across arbitrary histories, and pagination remain simplified.
+The mock server supports the dataset transaction behavior this template uses, including branch-scoped committed heads, exact committed-transaction reads, open transaction visibility rules, and branch-aware reuse of existing open transactions. It still does not implement a full historical Foundry dataset-view engine. In particular, transaction-range behavior, snapshot reset handling across arbitrary histories, and pagination remain simplified.
 
 ## 13.3 Stream archive timing
 
