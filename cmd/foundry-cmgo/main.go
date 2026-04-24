@@ -53,17 +53,17 @@ func usage(w *os.File) {
 	_, _ = fmt.Fprintf(w, `%s
 
 Usage:
-  foundry-devx new [--name NAME --module MODULE --dir DIR]
-  foundry-devx seed dataset --csv INPUT.csv --alias-map alias-map.json [--alias input]
-  foundry-devx seed stream --csv RECORDS.csv --alias-map alias-map.json [--alias output] --url http://localhost:8080
-  foundry-devx version
+  foundry-cmgo new [--name NAME --module MODULE --dir DIR --example minimal|dataset|stream]
+  foundry-cmgo seed dataset --csv INPUT.csv --alias-map alias-map.json [--alias input]
+  foundry-cmgo seed stream --csv RECORDS.csv --alias-map alias-map.json [--alias output] --url http://localhost:8080
+  foundry-cmgo version
 
 Commands:
-  new           Generate a minimal Go compute-module starter repo
+  new           Generate a Go compute-module starter repo
   seed dataset  Copy a CSV into the mock Foundry dataset input layout
   seed stream   Publish CSV rows to a running mock Foundry stream endpoint
 
-`, titleStyle.Render("foundry-devx: local Foundry Compute Module development"))
+`, titleStyle.Render("foundry-cmgo: local Foundry Compute Module development"))
 }
 
 func runNew(args []string, stdout, stderr *os.File) int {
@@ -72,7 +72,7 @@ func runNew(args []string, stdout, stderr *os.File) int {
 	name := fs.String("name", "", "Project name")
 	module := fs.String("module", "", "Go module path for the generated project")
 	dir := fs.String("dir", "", "Output directory (defaults to --name)")
-	example := fs.String("example", "minimal", "Starter example to generate")
+	example := fs.String("example", "minimal", "Starter example to generate: minimal|dataset|stream")
 	pipelineVersion := fs.String("pipeline-version", internalversion.Current, "palantir-compute-module-pipeline-search version to require")
 	localReplace := fs.String("local-replace", "", "Optional local replace path for this pipeline module")
 	force := fs.Bool("force", false, "Allow writing into a non-empty directory and overwriting generated files")
@@ -181,7 +181,11 @@ func promptNew(name, module, dir, example *string) error {
 			huh.NewInput().Title("Project name").Value(name).Validate(nonEmpty("project name")),
 			huh.NewInput().Title("Go module path").Description("Example: github.com/acme/customer-enricher").Value(module).Validate(nonEmpty("module path")),
 			huh.NewInput().Title("Output directory").Description("Defaults to project name").Value(dir),
-			huh.NewSelect[string]().Title("Starter example").Options(huh.NewOption("Minimal transform", "minimal")).Value(example),
+			huh.NewSelect[string]().Title("Starter example").Options(
+				huh.NewOption("Minimal transform", "minimal"),
+				huh.NewOption("Dataset pipeline", "dataset"),
+				huh.NewOption("Stream pipeline", "stream"),
+			).Value(example),
 		),
 	)
 	return form.Run()
