@@ -10,7 +10,7 @@ This project is a pipeline-mode Foundry Compute Module (Go) that runs its pipeli
    - a snapshot dataset output (output transaction + upload + optional commit), or
    - a stream output (stream-proxy JSON record publish)
 
-This repo should also support a local, non-Foundry run mode for personal use and faster iteration:
+This repo also supports a local, non-Foundry run mode for personal use and faster iteration:
 
 - Read a local input file of emails
 - Enrich via Gemini
@@ -44,11 +44,15 @@ Foundry pipeline-mode containers are provided file paths via environment variabl
 - `BUILD2_TOKEN`: file path containing a bearer token
 - `RESOURCE_ALIAS_MAP`: file path containing a JSON alias map that includes at least input/output dataset identifiers and branch identifiers
 
-Additional configuration this module expects (not injected automatically):
+Service discovery:
 
-- `FOUNDRY_URL`: Foundry base URL used to call dataset APIs, e.g. `https://<your-stack>.palantirfoundry.com`
-- `GEMINI_API_KEY`: Gemini API key (inject as a secret), or configure a Foundry Source and read it from `SOURCE_CREDENTIALS`
-- `GEMINI_MODEL`: Gemini model name (inject as config)
+- `FOUNDRY_SERVICE_DISCOVERY_V2`: file path containing Foundry service base URLs. The code reads `api_gateway` for dataset APIs and `stream_proxy` for stream APIs.
+- `FOUNDRY_URL`: optional local/back-compat fallback when service discovery is not available.
+
+Additional configuration this module expects:
+
+- `GEMINI_API_KEY`: Gemini API key, or configure a Foundry Source and read it from `SOURCE_CREDENTIALS`
+- `GEMINI_MODEL`: Gemini model name
 
 Optional Gemini knobs:
 
@@ -63,14 +67,12 @@ Security notes:
 
 ## Local Mode (Non-Foundry)
 
-The pipeline core should be runnable outside Foundry as a first-class workflow.
-
-Desired local UX:
+Local mode is a first-class workflow:
 
 - `enricher local --input <csv> --output <csv>`
-- Optional: `--format csv|jsonl`, `--workers N`, `--dry-run`, `--fail-fast`
+- Supports the same worker, retry, timeout, rate-limit, fail-fast, Gemini model/base URL, and audit-capture knobs as Foundry mode.
 
-Local mode should share the same pipeline core as Foundry mode; only I/O adapters differ.
+Local and Foundry modes share the email-enricher pipeline contract; only I/O adapters differ.
 
 ## Dev Tooling
 
@@ -96,18 +98,15 @@ Tools explicitly not required for this project:
 
 ## Architecture (Adapters)
 
-Keep the pipeline core independent of how inputs/outputs are provided.
+The code keeps domain processing separate from local/Foundry I/O:
 
-Suggested boundaries:
+- `examples/email_enricher/pipeline`: output row contract, CSV codec, legacy stream-record codec, and enrichment orchestration helpers
+- `pkg/pipeline/io/local`: local CSV input helpers
+- `pkg/pipeline/io/foundry`: Foundry dataset I/O, stream backend boundary, and retry policy
+- `pkg/foundry`: environment parsing, service discovery, HTTP client, and internal keepalive support
+- `pkg/mockfoundry`: local Foundry-like API harness
 
-- `InputSource`: yields `EmailRow` values
-- `Enricher`: `Enrich(ctx, email) -> EnrichedRow`
-- `OutputSink`: accepts `EnrichedRow` values and writes them somewhere
-
-Adapters:
-
-- Foundry input/output adapters (dataset APIs)
-- Local file input/output adapters (CSV/JSONL on disk)
+The current stream backend is `LegacyStreamProxyBackend`. It preserves the compute-module-compatible stream-proxy surface while leaving a seam for a future high-scale streams backend.
 
 ## Foundry I/O
 
@@ -135,7 +134,7 @@ In Foundry pipeline mode, the build system may create the output transaction bef
 
 #### Stream Output (Stream-Proxy)
 
-Write one JSON record per output row via stream-proxy.
+Write one JSON record per output row via the legacy stream-proxy API. App orchestration talks through `foundryio.StreamBackend`; the current implementation is `LegacyStreamProxyBackend`.
 
 ## Foundry API Surface (Minimal)
 
@@ -151,9 +150,9 @@ The module can be implemented with a thin HTTP client hitting a small API surfac
 
 ## Schema Contract
 
-Schemas should be treated as build-time contracts.
+Schemas are treated as code-owned contracts. The email-enricher output columns live in `examples/email_enricher/pipeline.Header()`. Stream output uses the same logical field names through `RowToStreamRecord` / `RowFromStreamRecord`; local stream readTable projection adds metadata columns from `StreamMetadataHeader()`.
 
-Recommended MVP output columns (joinable and debuggable):
+Current output columns:
 
 - `email` (string, required)
 - `linkedin_url` (string)
@@ -173,14 +172,14 @@ The enrichment step is a single function boundary (interface) so unit/integratio
 
 - use deterministic test fakes (no network)
 
-Desired behavior:
+Current behavior:
 
 - One request per email
 - Uses Google Search grounding
 - Uses URL context
-- Structured JSON output constrained to the Go struct schema
-- Conservative timeouts and retries (transient failures only)
-- Rate limiting to respect quotas and avoid spiky egress
+- Parses structured JSON into the Go result schema
+- Applies per-email timeouts and retries for transient failures
+- Supports optional global request rate limiting
 
 ## Concurrency + Retry
 
@@ -188,10 +187,10 @@ Worker pool design:
 
 - Fixed number of workers (configurable)
 - Per-email retry with exponential backoff + jitter
-- Hard timeout per email and overall build deadline
-- Explicit failure policy (decide early)
-- Fail-fast: any error exits non-zero (build fails)
-- Partial output: write a row with `status=error` and continue
+- Per-email request timeout
+- `--fail-fast=true`: first enrichment error fails the run
+- default partial-output mode: write a row with `status=error` and continue
+- Foundry dataset/stream I/O retries use `foundryio.DefaultRetryPolicy`
 
 ## Local Testing Strategy
 
@@ -206,6 +205,8 @@ Layer 1: unit tests (no network, no Docker)
 - File-based env var loading (`BUILD2_TOKEN`, `RESOURCE_ALIAS_MAP`)
 - Worker pool behavior (timeouts, cancellation, retries)
 - CSV encode/decode
+- stream row encode/decode
+- stream table projection
 
 Layer 2: integration test using `httptest.Server`
 
@@ -222,8 +223,9 @@ Layer 3: Docker Compose smoke test
 
 Layer 4: Gemini integration tests (real network)
 
-- Prefer early, realistic end-to-end runs against the real Gemini API using a tiny fixture
-- Run in CI with required secrets and fail loudly if missing
+- `go test -tags=gemini_e2e ./...` runs the real Gemini package-level e2e when secrets are present
+- Docker/Venom e2e runs the real container against the mock Foundry service with real Gemini
+- CI skips Gemini-dependent jobs when secrets are absent
 
 ## Repo Layout
 
@@ -238,9 +240,11 @@ examples/
     pipeline/
       csv.go
       rows.go
+      stream.go
 internal/
   app/
     enricher.go
+    incremental.go
 pkg/
   foundry/
     client.go

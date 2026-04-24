@@ -112,6 +112,7 @@ func RunFoundry(
 	if err != nil {
 		return err
 	}
+	streamBackend := foundryio.NewLegacyStreamProxyBackend(client)
 
 	readStart := time.Now()
 	emails, err := foundryio.ReadInputEmails(ctx, client, inputRef)
@@ -121,7 +122,7 @@ func RunFoundry(
 	logf("loaded %d emails from input dataset in %s", len(emails), time.Since(readStart).Round(time.Millisecond))
 
 	modeStart := time.Now()
-	isStream, err := foundryio.ResolveOutputMode(ctx, client, outputRef, outputWriteMode)
+	isStream, err := foundryio.ResolveOutputModeWithBackend(ctx, streamBackend, outputRef, outputWriteMode)
 	if err != nil {
 		return err
 	}
@@ -133,7 +134,7 @@ func RunFoundry(
 
 	enrichStart := time.Now()
 	if isStream {
-		existingByEmail, err := readExistingStreamRows(ctx, client, outputRef, logger, runID)
+		existingByEmail, err := readExistingStreamRows(ctx, streamBackend, outputRef, logger, runID)
 		if err != nil {
 			return err
 		}
@@ -179,12 +180,12 @@ func RunFoundry(
 			)
 
 			writtenAt := time.Now().UTC().Format(time.RFC3339Nano)
-			rec := rowToStreamRecord(row)
+			rec := pipeline.RowToStreamRecord(row)
 			rec["run_id"] = runID
 			rec["written_at"] = writtenAt
 
 			publishStart := time.Now()
-			if err := foundryio.PublishJSONRecord(ctx, client, outputRef, rec); err != nil {
+			if err := streamBackend.PublishRecord(ctx, outputRef, rec); err != nil {
 				return err
 			}
 
@@ -267,7 +268,7 @@ func RunFoundry(
 
 func readExistingStreamRows(
 	ctx context.Context,
-	client *foundry.Client,
+	streamBackend foundryio.StreamBackend,
 	outputRef foundry.DatasetRef,
 	logger *log.Logger,
 	runID string,
@@ -277,7 +278,7 @@ func readExistingStreamRows(
 		branch = "master"
 	}
 
-	recs, err := client.ReadStreamRecords(ctx, outputRef.RID, branch)
+	recs, err := streamBackend.ReadRecords(ctx, outputRef)
 	if err != nil {
 		if isNotFoundError(err) {
 			logger.Printf("run=%s incremental: no prior stream snapshot found for %s@%s", runID, outputRef.RID, branch)
@@ -297,7 +298,7 @@ func readExistingStreamRows(
 
 	out := make(map[string]pipeline.Row, len(recs))
 	for _, rec := range recs {
-		row := rowFromStreamRecord(normalizeStreamRecord(rec))
+		row := pipeline.RowFromStreamRecord(rec)
 		key := emailKey(row.Email)
 		if key == "" {
 			continue
@@ -311,73 +312,6 @@ func readExistingStreamRows(
 	}
 	logger.Printf("run=%s incremental: loaded %d prior stream rows from %s@%s", runID, len(out), outputRef.RID, branch)
 	return out, nil
-}
-
-func normalizeStreamRecord(rec map[string]any) map[string]any {
-	if rec == nil {
-		return nil
-	}
-	// Some stream-proxy responses wrap the actual record under a key.
-	for _, key := range []string{"record", "value", "data"} {
-		if inner, ok := rec[key].(map[string]any); ok {
-			return inner
-		}
-	}
-	return rec
-}
-
-func rowFromStreamRecord(rec map[string]any) pipeline.Row {
-	get := func(key string) string {
-		v, ok := rec[key]
-		if !ok || v == nil {
-			return ""
-		}
-		s, ok := v.(string)
-		if !ok {
-			return ""
-		}
-		return s
-	}
-
-	return pipeline.Row{
-		Email:            strings.TrimSpace(get("email")),
-		LinkedInURL:      get("linkedin_url"),
-		Company:          get("company"),
-		Title:            get("title"),
-		Description:      get("description"),
-		Confidence:       get("confidence"),
-		Status:           get("status"),
-		Error:            get("error"),
-		Model:            get("model"),
-		Sources:          get("sources"),
-		WebSearchQueries: get("web_search_queries"),
-	}
-}
-
-func rowToStreamRecord(r pipeline.Row) map[string]any {
-	// Use null for empty values so nullable string columns behave like "missing" rather than "".
-	rec := map[string]any{
-		"email": r.Email,
-	}
-	assignNullable(rec, "linkedin_url", r.LinkedInURL)
-	assignNullable(rec, "company", r.Company)
-	assignNullable(rec, "title", r.Title)
-	assignNullable(rec, "description", r.Description)
-	assignNullable(rec, "confidence", r.Confidence)
-	assignNullable(rec, "status", r.Status)
-	assignNullable(rec, "error", r.Error)
-	assignNullable(rec, "model", r.Model)
-	assignNullable(rec, "sources", r.Sources)
-	assignNullable(rec, "web_search_queries", r.WebSearchQueries)
-	return rec
-}
-
-func assignNullable(dst map[string]any, key string, value string) {
-	if strings.TrimSpace(value) == "" {
-		dst[key] = nil
-		return
-	}
-	dst[key] = value
 }
 
 type tracedEnricher struct {
@@ -518,58 +452,6 @@ func isRetryableError(err error) bool {
 	return false
 }
 
-type incrementalPlan struct {
-	rows          []pipeline.Row
-	pendingEmails []string
-	pendingIdx    map[string][]int
-	cachedRows    int
-	pendingRows   int
-}
-
-func buildIncrementalPlan(inputEmails []string, existingByEmail map[string]pipeline.Row) incrementalPlan {
-	plan := incrementalPlan{
-		rows:       make([]pipeline.Row, len(inputEmails)),
-		pendingIdx: make(map[string][]int),
-	}
-	for i, raw := range inputEmails {
-		email := strings.TrimSpace(raw)
-		key := emailKey(email)
-
-		if prev, ok := existingByEmail[key]; ok && strings.EqualFold(strings.TrimSpace(prev.Status), "ok") {
-			prev.Email = email
-			plan.rows[i] = prev
-			plan.cachedRows++
-			continue
-		}
-
-		if _, seen := plan.pendingIdx[key]; !seen {
-			plan.pendingEmails = append(plan.pendingEmails, email)
-		}
-		plan.pendingIdx[key] = append(plan.pendingIdx[key], i)
-		plan.pendingRows++
-	}
-	return plan
-}
-
-func (p *incrementalPlan) applyEnrichedRows(rows []pipeline.Row) error {
-	if len(rows) != len(p.pendingEmails) {
-		return fmt.Errorf("incremental enrichment mismatch: got %d rows for %d pending emails", len(rows), len(p.pendingEmails))
-	}
-	for i, email := range p.pendingEmails {
-		key := emailKey(email)
-		idxs, ok := p.pendingIdx[key]
-		if !ok || len(idxs) == 0 {
-			return fmt.Errorf("incremental enrichment mismatch: missing pending indexes for %q", email)
-		}
-		row := rows[i]
-		row.Email = strings.TrimSpace(email)
-		for _, idx := range idxs {
-			p.rows[idx] = row
-		}
-	}
-	return nil
-}
-
 func readExistingOutputRows(
 	ctx context.Context,
 	client *foundry.Client,
@@ -622,21 +504,6 @@ func readExistingOutputRows(
 	return out, nil
 }
 
-func chooseBestIncrementalRow(a, b pipeline.Row) pipeline.Row {
-	aOk := strings.EqualFold(strings.TrimSpace(a.Status), "ok")
-	bOk := strings.EqualFold(strings.TrimSpace(b.Status), "ok")
-	if aOk && !bOk {
-		return a
-	}
-	if bOk && !aOk {
-		return b
-	}
-
-	// If neither is ok (or both are ok), prefer the latter. This is a best-effort heuristic:
-	// readTable ordering is not always stable, but we mainly want "any ok" to win.
-	return b
-}
-
 func isNotFoundError(err error) bool {
 	var he *foundry.HTTPError
 	return errors.As(err, &he) && he.StatusCode == 404
@@ -645,19 +512,4 @@ func isNotFoundError(err error) bool {
 func isPermissionDeniedError(err error) bool {
 	var he *foundry.HTTPError
 	return errors.As(err, &he) && he.StatusCode == 403
-}
-
-func emailKey(email string) string {
-	return strings.TrimSpace(email)
-}
-
-func countStatuses(rows []pipeline.Row) (okRows int, errorRows int) {
-	for _, row := range rows {
-		if strings.EqualFold(strings.TrimSpace(row.Status), "ok") {
-			okRows++
-			continue
-		}
-		errorRows++
-	}
-	return okRows, errorRows
 }

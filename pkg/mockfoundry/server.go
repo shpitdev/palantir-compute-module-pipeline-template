@@ -53,7 +53,17 @@ type Server struct {
 
 	// streams tracks stream-proxy records per stream RID and branch.
 	// A RID is considered a "stream" if it exists as a key in this map.
-	streams map[string]map[string][]map[string]any
+	streams               map[string]map[string][]map[string]any
+	streamReadTableHeader []string
+}
+
+// SetStreamReadTableHeader configures the column projection used when a stream
+// is read through the dataset readTable endpoint. If unset, the mock derives a
+// generic sorted header from the accumulated stream record keys.
+func (s *Server) SetStreamReadTableHeader(header []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.streamReadTableHeader = copyNonEmptyStrings(header)
 }
 
 type txnState struct {
@@ -549,30 +559,13 @@ func (s *Server) serveReadTableCSV(w http.ResponseWriter, r *http.Request, datas
 			branch = "master"
 		}
 
-		// Stable base header: must include the columns expected by pipeline.ReadCSV.
-		// Keep this list in sync with examples/email_enricher/pipeline.Header().
-		header := []string{
-			"email",
-			"linkedin_url",
-			"company",
-			"title",
-			"description",
-			"confidence",
-			"status",
-			"error",
-			"model",
-			"sources",
-			"web_search_queries",
-			// Optional metadata columns (extra columns are ignored by the pipeline reader).
-			"run_id",
-			"written_at",
-		}
+		recs := s.StreamRecords(datasetRID, branch)
+		header := s.streamReadTableHeaderFor(recs)
 
 		var buf bytes.Buffer
 		cw := csv.NewWriter(&buf)
 		_ = cw.Write(header)
 
-		recs := s.StreamRecords(datasetRID, branch)
 		for _, rec := range recs {
 			row := make([]string, 0, len(header))
 			for _, col := range header {
@@ -1019,6 +1012,43 @@ func (s *Server) handleCommit(w http.ResponseWriter, _ *http.Request, datasetRID
 func (s *Server) committedTablePath(datasetRID string) string {
 	// Keep this stable and human-inspectable for local harness use.
 	return filepath.Join(s.uploadDir, datasetRID, "_committed", "readTable.csv")
+}
+
+func (s *Server) streamReadTableHeaderFor(recs []map[string]any) []string {
+	s.mu.Lock()
+	configured := append([]string{}, s.streamReadTableHeader...)
+	s.mu.Unlock()
+	if len(configured) > 0 {
+		return configured
+	}
+
+	keys := map[string]struct{}{}
+	for _, rec := range recs {
+		for k := range rec {
+			k = strings.TrimSpace(k)
+			if k != "" {
+				keys[k] = struct{}{}
+			}
+		}
+	}
+	header := make([]string, 0, len(keys))
+	for k := range keys {
+		header = append(header, k)
+	}
+	sort.Strings(header)
+	return header
+}
+
+func copyNonEmptyStrings(vals []string) []string {
+	out := make([]string, 0, len(vals))
+	for _, val := range vals {
+		val = strings.TrimSpace(val)
+		if val == "" {
+			continue
+		}
+		out = append(out, val)
+	}
+	return out
 }
 
 func isSafeToken(s string) bool {

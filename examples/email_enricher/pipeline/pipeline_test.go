@@ -217,3 +217,82 @@ func TestReadCSV_WithBOMHeader(t *testing.T) {
 		t.Fatalf("unexpected row: %#v", rows[0])
 	}
 }
+
+func TestStreamRecordCodec(t *testing.T) {
+	row := pipeline.Row{
+		Email:       " alice@example.com ",
+		LinkedInURL: "https://www.linkedin.com/in/alice",
+		Company:     "Example",
+		Title:       "Engineer",
+		Description: "desc",
+		Confidence:  "high",
+		Status:      "ok",
+		Model:       "test-model",
+		Sources:     `["source"]`,
+	}
+
+	rec := pipeline.RowToStreamRecord(row)
+	if rec["email"] != row.Email {
+		t.Fatalf("email not preserved: %#v", rec)
+	}
+	if rec["company"] != "Example" {
+		t.Fatalf("company not encoded: %#v", rec)
+	}
+	if rec["error"] != nil {
+		t.Fatalf("empty optional error should encode as nil: %#v", rec)
+	}
+	if rec["web_search_queries"] != nil {
+		t.Fatalf("empty optional web_search_queries should encode as nil: %#v", rec)
+	}
+
+	for _, wrapper := range []string{"record", "value", "data"} {
+		got := pipeline.RowFromStreamRecord(map[string]any{wrapper: rec})
+		if got.Email != "alice@example.com" {
+			t.Fatalf("%s wrapper email: got %#v", wrapper, got)
+		}
+		if got.Company != "Example" || got.Status != "ok" || got.Model != "test-model" {
+			t.Fatalf("%s wrapper decoded wrong row: %#v", wrapper, got)
+		}
+	}
+}
+
+func TestWriteStreamRecordsCSV(t *testing.T) {
+	rec := pipeline.RowToStreamRecord(pipeline.Row{
+		Email:   "alice@example.com",
+		Company: "Example",
+		Status:  "ok",
+	})
+	rec["run_id"] = "run-123"
+	rec["written_at"] = "2026-04-23T00:00:00Z"
+
+	var buf bytes.Buffer
+	if err := pipeline.WriteStreamRecordsCSV(&buf, []map[string]any{{"record": rec}}); err != nil {
+		t.Fatalf("WriteStreamRecordsCSV failed: %v", err)
+	}
+
+	cr := csv.NewReader(bytes.NewReader(buf.Bytes()))
+	records, err := cr.ReadAll()
+	if err != nil {
+		t.Fatalf("parse stream csv: %v", err)
+	}
+	if len(records) != 2 {
+		t.Fatalf("expected header + 1 row, got %d records", len(records))
+	}
+
+	wantHeader := pipeline.StreamTableHeader()
+	if !slices.Equal(records[0], wantHeader) {
+		t.Fatalf("header mismatch: got %#v want %#v", records[0], wantHeader)
+	}
+
+	idx := make(map[string]int, len(records[0]))
+	for i, name := range records[0] {
+		idx[name] = i
+	}
+	if records[1][idx["email"]] != "alice@example.com" ||
+		records[1][idx["company"]] != "Example" ||
+		records[1][idx["status"]] != "ok" ||
+		records[1][idx["run_id"]] != "run-123" ||
+		records[1][idx["written_at"]] != "2026-04-23T00:00:00Z" {
+		t.Fatalf("unexpected stream csv row: %#v", records[1])
+	}
+}
