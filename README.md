@@ -95,9 +95,23 @@ go test ./...
 foundry-cmgo preview --rows 20
 foundry-cmgo build
 foundry-cmgo inspect last
+foundry-cmgo inspect config
+foundry-cmgo inspect outputs
 ```
 
 `preview` starts an in-process mock Foundry server, samples the configured input CSV (default 1000 rows), runs the generated `cmd/compute-module foundry` path with `FOUNDRY_URL`, `BUILD2_TOKEN`, and `RESOURCE_ALIAS_MAP`, then prints a compact output table. `build` intentionally builds and runs the generated Docker container by default so container-only Foundry issues are caught before publishing; use `foundry-cmgo build --container=false` or `foundry-cmgo build --local-process` for the faster host-process path. Build uses the full input and writes committed local output under `.local/mock-foundry/` for dataset mode or run-local JSONL records for stream mode.
+
+`inspect last --json` returns the persisted `.local/foundry-cmgo/last-run.json` manifest. `inspect config` shows resolved config values (including inferred defaults), and `inspect outputs` shows the last dataset CSV or stream JSONL artifact, row/record count, state dir, run log, and Docker network strategy.
+
+Regression-check the generated starter workflow with:
+
+```bash
+./dev verify foundry-cmgo
+```
+
+That builds the current `foundry-cmgo` binary once, generates fresh dataset and stream starters with `--local-replace`, then runs `go test ./...`, `preview`, default Docker `build`, and `inspect` commands in both generated projects.
+
+See [`docs/foundry-cmgo-cli-output-captures.md`](docs/foundry-cmgo-cli-output-captures.md) for deterministic output captures from fresh dataset and stream starters.
 
 Generated dataset/stream starters include `foundry-cmgo.yaml`:
 

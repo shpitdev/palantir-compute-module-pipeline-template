@@ -9,9 +9,13 @@ go test ./...
 foundry-cmgo preview
 foundry-cmgo build
 foundry-cmgo inspect last
+foundry-cmgo inspect config
+foundry-cmgo inspect outputs
 ```
 
 `foundry-cmgo preview` starts an in-process mock Foundry server, samples `data/input.csv` (1000 rows by default), runs the same `foundry` command used by the platform, and prints a compact output table. `foundry-cmgo build` intentionally builds and runs the generated Docker container by default so container-only Foundry issues are caught early; use `foundry-cmgo build --container=false` or `foundry-cmgo build --local-process` for the faster host-process path. Build uses the full configured input and commits output into local mock Foundry state.
+
+Use `foundry-cmgo inspect config` to see resolved config paths and `foundry-cmgo inspect outputs` to find the last dataset CSV or stream JSONL artifact, run log, and state directory.
 
 Configuration lives in `foundry-cmgo.yaml`:
 

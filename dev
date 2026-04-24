@@ -15,7 +15,7 @@ usage() {
 dev: local developer entrypoint
 
 Usage:
-  ./dev verify
+  ./dev verify [foundry-cmgo]
   ./dev test [venom args...]
   ./dev run local -- <enricher local args...>
   ./dev run foundry-emulated [--watch]
@@ -446,6 +446,14 @@ main() {
   case "$1" in
     verify)
       shift
+      if [[ "${1:-}" == "foundry-cmgo" || "${1:-}" == "foundry-cmgo-generated" ]]; then
+        shift
+        if [[ $# -gt 0 ]]; then
+          echo "unknown arg for verify foundry-cmgo: $1" >&2
+          return 2
+        fi
+        exec ./test/scripts/verify_foundry_cmgo_generated.sh
+      fi
       ./godelw verify --apply=false "$@"
       ./test/scripts/verify_public_modules.sh
       exec ./test/scripts/dev_cli_test.sh
