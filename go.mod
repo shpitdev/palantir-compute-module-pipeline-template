@@ -6,7 +6,7 @@ require (
 	charm.land/huh/v2 v2.0.3
 	charm.land/lipgloss/v2 v2.0.3
 	golang.org/x/time v0.15.0
-	google.golang.org/genai v1.54.0
+	google.golang.org/genai v1.55.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 
