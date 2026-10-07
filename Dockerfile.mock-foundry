@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 
-FROM --platform=linux/amd64 golang:1.25 AS builder
+FROM --platform=linux/amd64 golang:1.26.8 AS builder
 
 WORKDIR /src
 COPY . .
